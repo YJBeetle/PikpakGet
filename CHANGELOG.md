@@ -3,6 +3,28 @@
 This project aims to follow Keep a Changelog and SemVer. Below 1.0.0 the command
 line and module APIs may change between releases.
 
+## Unreleased
+
+### Fixed
+- **A link could be declared finished while files were still missing.** 0.1.1 started
+  keying links by URL *and* destination folder but kept reading progress records
+  written under the old bare-URL key, so the end-of-link check found nothing pending
+  and a link with two files left on the cloud was marked done and skipped for good.
+  The state file now carries a version, v1 state is migrated once on load, and pending
+  work is decided from the ids in the current listing rather than from any key.
+- **One revoked share stopped a run that had days of scheduling left.** PikPak answers
+  403 both for a dead session and for a single share that has since been removed, and
+  the two are indistinguishable at the call site; the first one used to end everything.
+  Only a session the server refuses to refresh stops the run now — a plain 403 is
+  counted, skips that link, and a listing that answers clears the suspicion. A socket
+  error during a refresh no longer looks like a dead session either.
+- **Names containing an inner pair of dots were rewritten** (`movie..2.mp4` came out as
+  `movie._2.mp4`) to guard against traversal that is already impossible once separators
+  are flattened. Only a name that *is* `.` or `..` — the directory itself — is neutralised.
+- **Ctrl-C could still wait minutes on the single-stream path**, because the socket
+  timeout that bounds a stalled read was 300 s. It now shares the stall window the
+  segmented lanes use.
+
 ## 0.1.1
 
 Fixes from a line-by-line review of the code shipped in 0.1.0. Four of them were
