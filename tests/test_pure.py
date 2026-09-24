@@ -161,6 +161,12 @@ class RunLinkHarness(unittest.TestCase):
         self.pipeline.forget = lambda *a, **k: None
         self.pipeline.wait_ready = lambda *a, **k: {}
         self.pipeline.reuse_or_restore = lambda job, node, record, token: 'RESTORED'
+        # the library volume's free space is the environment, not the behaviour under
+        # test: a CI runner with <20 GB free would otherwise return 'blocked'
+        real_shutil = self.module.shutil
+        self.addCleanup(setattr, self.module, 'shutil', real_shutil)
+        self.module.shutil = type('stub', (), {'disk_usage': lambda path: type(
+            'du', (), {'free': 100 << 40})()})()
         self.pipeline.client.download_url = lambda fid: ('http://host/file', {})
         self.addCleanup(setattr, pipeline_module, 'download_stream', pipeline_module.download_stream)
         self.downloads = []
