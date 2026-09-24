@@ -141,8 +141,12 @@ class Session:
             return
         os.makedirs(os.path.dirname(self.path) or '.', exist_ok=True)
         tmp = f'{self.path}.tmp'
-        with open(tmp, 'w', encoding='utf-8') as handle:
+        # create it private: opening with the default umask first would leave a
+        # readable window, and chmod after os.replace is even later
+        descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=1)
+        os.chmod(tmp, 0o600)
         os.replace(tmp, self.path)
         os.chmod(self.path, 0o600)
 
@@ -413,7 +417,8 @@ class Client:
                 if len(nodes) >= max_nodes:
                     break
         return {'share_id': share_id, 'title': info.get('title'), 'pass_code_token': token,
-                'file_num': info.get('file_num'), 'nodes': nodes}
+                'file_num': info.get('file_num'), 'nodes': nodes,
+                'truncated': bool(queue)}
 
     # ------------------------------------------------------------------- change
     def restore(self, share_id, pass_code_token, file_ids, parent_id='*'):

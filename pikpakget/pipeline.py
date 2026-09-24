@@ -74,8 +74,11 @@ def safe_name(name, limit=200):
     """Turn a remote file or folder name into one safe local path component,
     without tripping over NAME_MAX or path separators coming from the server."""
     text = re.sub(r'[/\x00]', '_', str(name)).strip()
-    text = re.sub(r'\s+', ' ', text).strip(' .')
-    text = text.replace('..', '.')
+    text = re.sub(r'\s+', ' ', text).strip()
+    # a single leading dot is a dotfile and must survive; a double dot is traversal
+    # at any position once separators have been flattened, so break every pair up
+    text = text.replace('..', '_.')
+    text = text.strip(' ')
     if len(text.encode('utf-8')) > limit:
         stem, dot, ext = text.rpartition('.')
         keep = max(limit - len(ext.encode('utf-8')) - 9, 8)
@@ -184,6 +187,21 @@ class State:
 
     def files_of(self, url):
         return [rec for rec in self.data['files'].values() if rec.get('url') == url]
+
+    def reset_transient_failures(self):
+        """Give files that failed last time a full budget again.
+
+        `attempts` decides when a file is abandoned; accumulating it across runs
+        would let three transient hiccups anywhere in a file's life condemn it
+        permanently, after which every re-run skips it on the first glitch."""
+        for record in self.data['files'].values():
+            if record.get('state') in ('failed', 'retry'):
+                record['state'] = 'pending'
+                record['attempts'] = 0
+        for info in self.data['links'].values():
+            if info.get('status') == 'error':
+                info['status'] = 'pending'
+                info['attempts'] = 0
 
     def save(self):
         os.makedirs(os.path.dirname(self.path) or '.', exist_ok=True)
@@ -298,7 +316,8 @@ class Pipeline:
         files = [node for node in walked['nodes'] if not node['is_folder']]
         return {'title': walked.get('title') or '', 'token': walked['pass_code_token'],
                 'files': files, 'total': sum(node['size'] for node in files),
-                'folders': sum(1 for node in walked['nodes'] if node['is_folder'])}
+                'folders': sum(1 for node in walked['nodes'] if node['is_folder']),
+                'truncated': bool(walked.get('truncated'))}
 
     # ------------------------------------------------------------- one file step
     def reuse_or_restore(self, job, node, record, token):
@@ -484,7 +503,12 @@ class Pipeline:
             return 'throttled' if self.note_throttle(error) else 'error'
         files = sorted(report['files'], key=lambda node: node['size'])
         link.update({'status': 'active', 'folder': job['folder'], 'title': report['title'],
-                     'total_bytes': report['total'], 'file_count': len(files)})
+                     'total_bytes': report['total'], 'file_count': len(files),
+                     'truncated': report['truncated']})
+        if report['truncated']:
+            # a capped listing must not be mistaken for "everything is done"
+            self.log(f'{job["folder"]}: 枚举被 max_nodes 截断，可能有文件未列入，'
+                     '请加大上限后重跑', 'warn')
         self.state.save()
         biggest = max((node['size'] for node in files), default=0)
         self.log(f'{job["folder"]}: {len(files)} 个文件 / {human(report["total"])}，'
@@ -593,6 +617,9 @@ class Pipeline:
         if not os.access(self.args.dest, os.W_OK):
             self.log(f'目标目录不可写: {self.args.dest}', 'error')
             return 2
+        if not self.args.dry_run:
+            self.state.reset_transient_failures()
+            self.state.save()
         if not self.args.no_sweep:
             self.sweep_leftovers()
         space = self.space()

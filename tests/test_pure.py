@@ -177,10 +177,81 @@ class RunLinkHarness(unittest.TestCase):
                 'path': path or name, 'hash': None, 'is_folder': False}
         self.pipeline.inventory = lambda job: {
             'title': 'Series', 'token': 'TOKEN', 'files': [node],
-            'total': size, 'folders': 0}
+            'total': size, 'folders': 0, 'truncated': False}
         job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111', 'share_id':
                'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'Series', 'order': 1}
         return self.pipeline.run_link(job), node
+
+
+class TestTruncationIsVisible(RunLinkHarness):
+    """A capped listing must never be able to mark a link complete in silence."""
+
+    def test_a_capped_walk_is_flagged_on_the_link(self):
+        def truncated_walked(job):
+            return {'title': 'Series', 'token': 'T', 'files': [], 'total': 0,
+                    'folders': 0, 'truncated': True}
+        self.pipeline.inventory = truncated_walked
+        job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111', 'share_id':
+               'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'Series', 'order': 1}
+        job['key'] = job['url'] + '\tSeries'
+        self.pipeline.run_link(job)
+        self.assertTrue(self.pipeline.state.link(job['key'])['truncated'])
+
+
+class TestPerRunRetryBudget(unittest.TestCase):
+    """A transient failure last week must not condemn a file forever."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.state = State(os.path.join(self.dir, 'state.json'))
+
+    def test_abandoned_files_get_a_fresh_budget(self):
+        self.state.file('A').update({'state': 'failed', 'attempts': 3})
+        self.state.file('B').update({'state': 'retry', 'attempts': 2})
+        self.state.file('C').update({'state': 'done', 'attempts': 3})
+        self.state.file('D').update({'state': 'too_big', 'attempts': 1})
+        self.state.link('u')['status'] = 'error'
+        self.state.reset_transient_failures()
+        self.assertEqual(self.state.file('A')['state'], 'pending')
+        self.assertEqual(self.state.file('A')['attempts'], 0)
+        self.assertEqual(self.state.file('B')['state'], 'pending')
+        self.assertEqual(self.state.file('C')['state'], 'done', 'completed work is untouched')
+        self.assertEqual(self.state.file('D')['state'], 'too_big', 'over quota stays skipped')
+        self.assertEqual(self.state.link('u')['status'], 'pending')
+
+
+class TestDotFileNames(unittest.TestCase):
+    def test_dotfiles_keep_their_leading_dot(self):
+        self.assertEqual(safe_name('.bashrc'), '.bashrc')
+
+    def test_parent_traversal_is_still_neutralised(self):
+        for name in ('../escape', '../../etc/passwd', 'a/../b'):
+            cleaned = safe_name(name)
+            self.assertNotIn('..', cleaned)
+            self.assertNotIn('/', cleaned)
+
+    def test_a_dotfile_name_survives_intact(self):
+        self.assertEqual(safe_name('.gitignore'), '.gitignore')
+
+
+class TestShareTruncationFlag(unittest.TestCase):
+    def test_walk_reports_truncation_instead_of_losing_files_quietly(self):
+        import pikpakget.api as api
+        client = api.Client.__new__(api.Client)      # no session: only walk logic here
+        pages = {
+            '*': [{'id': 'F1', 'name': 'a', 'kind': 'drive#file', 'size': '1'},
+                  {'id': 'D1', 'name': 'dir', 'kind': 'drive#folder'}],
+            'D1': [{'id': 'F2', 'name': 'b', 'kind': 'drive#file', 'size': '2'}],
+        }
+        client.share_info = lambda share_id, pass_code='': {
+            'pass_code_token': 'T', 'title': 'x', 'file_num': 2,
+            'files': pages['*']}
+        client.share_children = lambda share_id, token, parent_id: pages.get(parent_id, [])
+        whole = client.walk_share('S')
+        self.assertFalse(whole['truncated'])
+        self.assertEqual(len(whole['nodes']), 3)
+        capped = client.walk_share('S', max_nodes=2)
+        self.assertTrue(capped['truncated'], 'a capped walk must say so')
 
 
 class TestLinkIdentity(unittest.TestCase):
