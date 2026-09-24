@@ -185,14 +185,18 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
         if stale != seg_dir:
             shutil.rmtree(stale, ignore_errors=True)
     plan = plan_segments(total, connections, seg_dir)
-    for attempt, wait_seconds in enumerate((0,) + SEGMENT_RETRY_WAITS):
+    last_progress = True        # back off only when a round actually got nowhere
+    for attempt in range(len(SEGMENT_RETRY_WAITS) + 1):
+        wait_seconds = 0 if last_progress else SEGMENT_RETRY_WAITS[attempt - 1]
         missing = [item for item in plan if _segment_have(item) < item['want']]
         if not missing:
             break
         before = sum(_segment_have(item) for item in plan)
         if wait_seconds:
-            log(f'{len(missing)} 段未完成，等待 {wait_seconds}s 后第 {attempt} 次重试', 'warn')
+            log(f'{len(missing)} 段未完成，等待 {wait_seconds}s 后第 {attempt} 次退避重试', 'warn')
             wait(wait_seconds)
+        elif attempt:
+            log(f'{len(missing)} 段继续（上一轮有进展，不退避）', 'debug')
         running = []
         try:
             for position, item in enumerate(missing):
@@ -215,6 +219,7 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
         if overshot_indices and log:
             log(f'段 {overshot_indices} 尾部有越界字节，拼接时将忽略', 'warn')
         gained = sum(_segment_have(item) for item in plan)
+        last_progress = gained > before
         if gained <= before:
             # one probe turns "unknown failure" into a decision we can act on: a
             # refusal means stop, a starved lane merely means this round was unlucky

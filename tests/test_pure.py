@@ -583,6 +583,29 @@ class TestSegmentSafetyValve(unittest.TestCase):
                                              1000, 4, wait=lambda seconds: None,
                                              log=lambda message, level='info': None)
 
+    def test_a_round_that_made_progress_is_not_penalised_with_a_wait(self):
+        """Back-off is for dead rounds. Sleeping 60s after a round that moved bytes
+        was throwing away about a third of the transfer time."""
+        calls = []
+
+        def spawn_lanes(item, url):
+            calls.append(item['index'])
+            # a third of each lane on the first pass, the rest on the next one
+            with open(item['path'], 'ab') as handle:
+                handle.truncate(item['want'] if len(calls) > 2 else item['want'] // 3)
+            return self.DeadProcess()
+
+        self.stream._spawn = spawn_lanes
+        self.probe('206')
+        waits = []
+        result = self.stream.download_segments(lambda: 'http://invalid.invalid', self.target,
+                                              1000, 2, wait=waits.append,
+                                              log=lambda message, level='info': None)
+        self.assertEqual(result, 1000)
+        self.assertEqual([seconds for seconds in waits if seconds >= 60], [],
+                         'productive rounds must not trigger back-off')
+
+
     def test_refusal_raises_segment_refused(self):
         from pikpakget.api import PikPakError
         from pikpakget.stream import SegmentRefused
