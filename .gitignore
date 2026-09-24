@@ -1,0 +1,23 @@
+# credentials, progress and logs stay local
+.pikpakget/
+state/
+session.json
+device_id
+*.log
+logs/
+inventory.csv
+downloads/
+*.part
+*.part.segs/
+.segs/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+
+# os
+.DS_Store

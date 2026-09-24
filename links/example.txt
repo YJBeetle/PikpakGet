@@ -1,0 +1,5 @@
+# One share link per line, processed top to bottom.
+# An optional tab and a second column set the destination folder name.
+#
+# https://mypikpak.com/s/EXAMPLESHAREID01<TAB>ExampleSeries
+# https://mypikpak.com/s/EXAMPLESHAREID02
