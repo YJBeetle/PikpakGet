@@ -49,6 +49,9 @@ CAPTCHA_SALTS = (
 TOKEN_REFRESH_MARGIN = 900          # refresh when <15 min left
 CAPTCHA_TTL = 240                   # the server issues 300s
 THROTTLE_BACKOFF = (30, 120, 480, 900)
+# A dropped TLS session is routine on this network, not a verdict about the link:
+# retry it quickly, and only give up after several attempts.
+NETWORK_RETRY_WAITS = (5, 15, 45, 120, 240)
 SHARE_ID = re.compile(
     r'(?:mypikpak\.com|pickpackapp\.com|mypikpak\.net|pikpak\.me)/s/([A-Za-z0-9_\-]{8,})')
 
@@ -289,12 +292,13 @@ class Client:
         return token
 
     def call(self, method, path, *, params=None, json_body=None, base=DRIVE_API,
-             action=None, retries=4):
+             action=None, retries=None):
         """One API call. The shield token is per action, so it is minted lazily
         and reused inside its lifetime."""
         action = action or f'{method}:/drive{path}'
+        attempts = retries if retries is not None else len(NETWORK_RETRY_WAITS)
         last = {}
-        for attempt in range(retries):
+        for attempt in range(attempts):
             status, body = self._raw(method, f'{base}{path}', params=params, json_body=json_body,
                                      headers={'x-action': action,
                                               'x-captcha-token': self.captcha_token(action)})
@@ -302,6 +306,11 @@ class Client:
                 return body
             last = {'status': status, **body}
             problem = str(body.get('error_description') or body.get('error') or '请求失败')
+            if status is None:                          # socket/TLS/DNS level failure
+                wait = NETWORK_RETRY_WAITS[min(attempt, len(NETWORK_RETRY_WAITS) - 1)]
+                self.log(f'网络抖动（{problem[:70]}），{wait}s 后重试', 'warn')
+                time.sleep(wait)
+                continue
             throttled = self._throttled(status, body)
             if status in (401, 403) and 'token' in problem.lower():
                 self._captchas.clear()

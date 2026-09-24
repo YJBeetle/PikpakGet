@@ -3,6 +3,7 @@ import collections
 import json
 import os
 import tempfile
+import time
 import unittest
 
 import argparse
@@ -321,6 +322,68 @@ class TestSegmentResume(unittest.TestCase):
         command = self.stream.build_command(self.item(2, 200, 299), 'http://host/url')
         self.assertIn('--max-filesize', command)
         self.assertEqual(command[command.index('--max-filesize') + 1], '100')
+
+
+class TestTransientNetworkRetry(unittest.TestCase):
+    """A dropped TLS session is routine here. Treating it as "this link is broken"
+    skipped a 404 GB link after one hiccup, which is the failure this covers."""
+
+    def setUp(self):
+        from pikpakget.api import Client
+        dirpath = tempfile.mkdtemp()
+        self.client = Client(session_path=os.path.join(dirpath, 'session.json'),
+                             device_id_path=os.path.join(dirpath, 'device_id'))
+        self.client.session.store({'access_token': 'a' * 40, 'refresh_token': 'r',
+                                   'sub': 'u', 'expires_at': time.time() + 3600})
+        self.client.captcha_token = lambda action: 'captcha-token'
+        self.slept = []
+        self.client._raw = self.fake_raw
+        self.patches = []
+
+    def fake_raw(self, *args, **kwargs):
+        raise AssertionError('replaced per test')
+
+    def feed(self, results):
+        queue = collections.deque(results)
+
+        def raw(method, url, **kwargs):
+            return queue.popleft() if queue else (200, {})
+        self.client._raw = raw
+
+    def waits(self):
+        import pikpakget.api as api
+        original = api.time.sleep
+        api.time.sleep = lambda seconds: self.slept.append(seconds)
+        self.addCleanup(setattr, api.time, 'sleep', original)
+
+    def test_a_dropped_connection_is_retried_and_then_succeeds(self):
+        self.feed([(None, {'error_description': 'URLError: SSL EOF'}),
+                   (None, {'error_description': 'URLError: SSL EOF'}),
+                   (200, {'quota': {'limit': '10'}})])
+        self.waits()
+        self.assertEqual(self.client.about(), {'quota': {'limit': '10'}})
+        self.assertEqual(self.slept, [5, 15])
+
+    def test_giving_up_only_happens_after_the_whole_wait_ladder(self):
+        import pikpakget.api as api
+        self.feed([(None, {'error_description': 'URLError: SSL EOF'})] * 5)
+        self.waits()
+        with self.assertRaises(api.PikPakError):
+            self.client.about()
+        self.assertEqual(len(self.slept), 5)
+
+    def test_a_permanent_error_is_not_retried(self):
+        self.feed([(404, {'error_description': 'share not found'})])
+        self.waits()
+        with self.assertRaises(Exception):
+            self.client.share_info('MISSINGSHAREID')
+        self.assertEqual(self.slept, [], 'a 404 must not be retried')
+
+    def test_rate_limit_backs_off_far_longer_than_a_blip(self):
+        self.feed([(429, {'error_description': 'slow down'}), (200, {})],)
+        self.waits()
+        self.client.about()
+        self.assertEqual(self.slept, [30])
 
 
 class TestStartupSweep(unittest.TestCase):
