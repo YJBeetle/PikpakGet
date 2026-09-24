@@ -27,6 +27,9 @@ git clone git@github.com:YJBeetle/PikpakGet.git
 cd PikpakGet
 python3 -m pikpakget --help           # 直接在仓库目录里跑
 pip install -e . && pikpakget --help  # 或者装成一个命令行工具
+
+# 也可以直接从 release 资产装，不必克隆：
+# pip install https://github.com/YJBeetle/PikpakGet/releases/download/v0.1.3/pikpakget-0.1.3-py3-none-any.whl
 ```
 
 ## 使用
@@ -213,7 +216,9 @@ python3 -m unittest discover -s tests -t . -v
 - **长期稳定性未证实。** 多天运行是设计目标、续传路径有日志保障，但第一次真实的多日
   任务正在进行中。
 - **上面的速度数字只是某个晚上的观测**，随时段漂移，请当成量级而不是容量。
-- **没发到 PyPI**，从仓库安装（`pip install -e .`）。
+- **没发到 PyPI。** 每个 release 都会把打好的 wheel 与 sdist 挂到自己的资产上（见
+  `.github/workflows/release-assets.yml`），`pip install <资产地址>` 即可；从克隆装是
+  `pip install -e .`。
 
 ## 平台说明
 

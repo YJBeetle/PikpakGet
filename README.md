@@ -29,6 +29,9 @@ git clone git@github.com:YJBeetle/PikpakGet.git
 cd PikpakGet
 python3 -m pikpakget --help          # run it in place
 pip install -e . && pikpakget --help  # or get a console script
+
+# or install a published release straight from its assets, no clone needed:
+# pip install https://github.com/YJBeetle/PikpakGet/releases/download/v0.1.3/pikpakget-0.1.3-py3-none-any.whl
 ```
 
 ## Use
@@ -246,7 +249,9 @@ Stated plainly, because each one has bitten someone at some point:
   resume path is journalled, but the first real multi-day run is happening right now.
 - **Speed figures here are one evening's observations in binary units (MiB/s)** and drift by time of day;
   treat them as orders of magnitude, not capacity.
-- **Not published to PyPI**; install from the repository (`pip install -e .`).
+- **Not published to PyPI.** Every release attaches a built wheel and sdist to
+  its own assets (see `.github/workflows/release-assets.yml`), so `pip install
+  <release asset url>` works; from a clone it is `pip install -e .`.
 
 ## Platform notes
 

@@ -1,0 +1,26 @@
+name: release-assets
+on:
+  # every release (tag) ships an sdist and a wheel, so `pip install <release asset
+  # url>` works without a PyPI account and without anyone building from a clone.
+  # Cut releases with `gh release create v…` (which creates the tag itself): the
+  # release must already exist by the time this workflow uploads into it.
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build
+      - run: python -m build
+      # a wheel that cannot be imported is not a release: install the artifact we are
+      # about to publish and run the shipped console script
+      - run: python -m venv .verify && .verify/bin/pip install -q dist/*.whl && .verify/bin/pikpakget --version
+      - run: gh release upload "${GITHUB_REF_NAME}" dist/*.whl dist/*.tar.gz --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
