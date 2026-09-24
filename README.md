@@ -194,6 +194,27 @@ python3 -m unittest discover -s tests -t . -v
 The tests deliberately avoid any account or share data; the fixtures are synthetic
 ids. Please keep it that way if you add cases.
 
+## Known limitations
+
+Stated plainly, because each one has bitten someone at some point:
+
+- **Integrity is byte count only.** PikPak exposes no trustworthy checksum for a
+  downloaded file (see Verification), so a bit-flip that preserves length would go
+  unnoticed. TLS covers transit; nothing covers a bad server-side copy.
+- **macOS is the only platform this has been run on.** Linux is expected to work
+  (`fcntl`, `curl`, POSIX paths) but is untested; Windows is not supported.
+- **The refusal path is untested in the wild.** Dropping to one connection after an
+  HTTP 4xx/5xx is covered by unit tests, but no real refusal has been observed yet,
+  so the reaction is designed from the response shape rather than experience.
+- **A single file larger than your cloud quota cannot be fetched**, by any tool:
+  it has to fit in the drive before it can be downloaded. These are skipped and
+  counted as `unfetchable` in `--inventory`.
+- **Long-run stability is unproven.** Multi-day runs are the design target and the
+  resume path is journalled, but the first real multi-day run is happening right now.
+- **Speed figures here are one evening's observations** and drift by time of day;
+  treat them as orders of magnitude, not capacity.
+- **Not published to PyPI**; install from the repository (`pip install -e .`).
+
 ## Platform notes
 
 Written against macOS and uses `fcntl` for the single-instance lock and POSIX path
