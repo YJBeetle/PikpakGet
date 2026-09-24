@@ -83,6 +83,12 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | `--purge-trash` | off | allow emptying the whole trash if the quota is the blocker |
 | `--no-sweep` | off | don't reclaim cloud copies an interrupted run left behind at startup |
 | `--folder-map FILE` | none | `url,folder` mapping for lines without a folder column |
+| `--default-folder NAME` | `(unfiled)` | folder for lines that carry no name |
+| `--inventory-out FILE` | `inventory.csv` | where `--inventory` writes |
+| `--log PATH` | `.pikpakget/grab-<date>.log` | `-` for stdout only |
+| `--login USERNAME` / `--password-stdin` | — | sign in once; read the password from stdin instead of a prompt |
+| `--yes` | off | skip unparsable lines in the links file instead of refusing to start |
+| `--quiet` | off | hide info chatter, warnings still shown |
 
 ## What the quota actually behaves like
 
@@ -95,9 +101,9 @@ Measured on a free account, and worth knowing before you plan a large run:
 - **A share can only be restored in pieces.** Restoring a folder id copies its
   whole subtree and fails when it does not fit, so files are restored one id at a
   time and the listing is walked first (listing is free and instant).
-- **Files larger than the quota cannot be fetched at all.** A 7.1 GiB file does not
-  fit a 6 GiB drive has no path through this tool: it is marked `too_big`, skipped, and reported
-  in `--inventory` as `unfetchable` rather than attempted and left half-restored.
+- **Files larger than the quota cannot be fetched at all.** A 7.1 GiB file does not fit
+  a 6 GiB drive, and no tool can change that: it is marked `too_big`, skipped, and
+  reported by `--inventory` as `unfetchable` rather than attempted and left half-restored.
 - **Offline task slots are limited** (`quota.cloud_download`, 3 on free). Sequential
   single-file work stays well under it.
 - **Throughput is shaped per account, not per connection.** A single connection
@@ -115,9 +121,8 @@ single connection and stays there; a **starved** lane (2xx, no bytes) is just
 unlucky bandwidth shaping, so segments are retried with back-off instead of being
 abandoned file after file.
 
-Budget accordingly: the 405 GiB one author's main folder holds costs roughly one to
-four weeks of
-continuous running.
+Budget accordingly: the 405 GiB that one author's main folder holds costs roughly one to
+four weeks of continuous running.
 
 ## Being a good citizen (avoiding risk control)
 
@@ -189,7 +194,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream + ranged concurrent segments
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     61 tests on the pure logic; no account, no network
+tests/test_pure.py     85 tests on the pure logic; no account, no network
 ```
 
 ## Development
