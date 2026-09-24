@@ -9,8 +9,8 @@ import unittest
 import argparse
 
 from pikpakget.api import captcha_sign, parse_share_url
-from pikpakget.pipeline import (MAX_ATTEMPTS, STATE_VERSION, State, human, load_folder_map,
-                                read_links, safe_name)
+from pikpakget.pipeline import (AUTH_STOP, MAX_ATTEMPTS, STATE_VERSION, State, human,
+                                load_folder_map, read_links, safe_name)
 from pikpakget.stream import plan_segments
 
 
@@ -329,10 +329,13 @@ class TestFailureClassification(unittest.TestCase):
             stopped = self.pipeline.note_throttle(self.error('下载被拒: HTTP 404', status=404))
             self.assertFalse(stopped, 'a 404 CDN link is not the CDN saying slow down')
 
-    def test_a_dead_session_asks_to_relogin_not_to_wait(self):
+    def test_a_refused_session_asks_to_relogin_not_to_wait(self):
         import contextlib
         import io
         buffer = io.StringIO()
+        # the server said no to refreshing *this* session; a bare 403 on one link
+        # does not, see TestSessionVersusOneBadLink
+        self.pipeline.client.session_dead = True
         with contextlib.redirect_stdout(buffer):
             stopped = self.pipeline.note_throttle(self.error('会话续期失败: 403', status=403))
         self.assertTrue(stopped)
@@ -1219,6 +1222,77 @@ class TestStateKeyCannotHideWork(RunLinkHarness):
         # that field to decide whether work remains
         self.assertEqual(self.pipeline.state.file('SHAREFILE1')['url'],
                          'https://mypikpak.com/s/EXAMPLEID1')
+
+
+class TestSessionVersusOneBadLink(RunLinkHarness):
+    """PikPak answers 403 for a dead session and for a share that has been revoked,
+    and the two are indistinguishable at the call site. Guessing "dead session" on
+    the first one stops a run that has days of scheduling left."""
+
+    def error(self, status=403):
+        from pikpakget.api import PikPakError
+        return PikPakError('access denied', status=status)
+
+    def link_that_is_refused(self):
+        self.pipeline.inventory = lambda job: (_ for _ in ()).throw(self.error())
+        return {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111', 'share_id':
+                'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'Series', 'order': 1}
+
+    def test_one_refusal_skips_the_link_instead_of_stopping_the_run(self):
+        self.assertFalse(self.pipeline.note_throttle(self.error()))
+        self.assertEqual(self.pipeline.auth_hits, 1)
+
+    def test_run_link_reports_an_error_not_a_stop(self):
+        self.assertEqual(self.pipeline.run_link(self.link_that_is_refused()), 'error')
+
+    def test_a_listing_that_answers_clears_the_suspicion(self):
+        self.pipeline.auth_hits = 2
+        self.pipeline.inventory = lambda job: {'title': 'Series', 'token': 'T',
+                                              'files': [], 'total': 0, 'folders': 0,
+                                              'truncated': False}
+        job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111', 'share_id':
+               'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'Series', 'order': 1}
+        self.pipeline.run_link(job)
+        self.assertEqual(self.pipeline.auth_hits, 0)
+
+    def test_refusals_in_a_row_do_blame_the_session(self):
+        for _ in range(AUTH_STOP - 1):
+            self.assertFalse(self.pipeline.note_throttle(self.error()))
+        self.assertTrue(self.pipeline.note_throttle(self.error()))
+
+    def test_a_session_the_server_refused_to_refresh_stops_at_once(self):
+        self.pipeline.client.session_dead = True
+        self.assertTrue(self.pipeline.note_throttle(self.error()))
+        self.assertEqual(self.pipeline.auth_hits, 0)
+
+
+class TestRefreshFailureIsNotAlwaysFatal(unittest.TestCase):
+    """A socket that never reached the server says nothing about the session."""
+
+    def setUp(self):
+        from pikpakget.api import Client
+        dirpath = tempfile.mkdtemp()
+        self.client = Client(session_path=os.path.join(dirpath, 'session.json'),
+                             device_id_path=os.path.join(dirpath, 'device_id'))
+        self.client.session.store({'access_token': 'a' * 40, 'refresh_token': 'r',
+                                   'sub': 'u', 'expires_at': time.time() + 3600})
+
+    def answer(self, result):
+        self.client._raw = lambda *args, **kwargs: result
+
+    def test_a_blip_leaves_the_session_marked_alive(self):
+        from pikpakget.api import PikPakError
+        self.answer((None, {'error_description': 'URLError: connection reset'}))
+        with self.assertRaises(PikPakError):
+            self.client.refresh()
+        self.assertFalse(self.client.session_dead)
+
+    def test_a_refused_refresh_marks_the_session_dead(self):
+        from pikpakget.api import PikPakError
+        self.answer((403, {'error_description': 'invalid refresh token'}))
+        with self.assertRaises(PikPakError):
+            self.client.refresh()
+        self.assertTrue(self.client.session_dead)
 
 
 class TestHuman(unittest.TestCase):

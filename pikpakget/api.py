@@ -179,6 +179,9 @@ class Client:
         self.device_id = load_device_id(device_id_path) if device_id_path else uuid.uuid4().hex
         self._captchas = {}
         self._requests = 0
+        # only a session that provably cannot be refreshed justifies stopping a run;
+        # see refresh()
+        self.session_dead = False
 
     # ------------------------------------------------------------------ session
     def sign_in(self, username, password):
@@ -221,14 +224,20 @@ class Client:
 
     def refresh(self):
         if not self.session.data.get('refresh_token'):
+            self.session_dead = True
             raise PikPakError('会话没有 refresh_token，请重新登录', action='refresh')
         status, body = self._raw('POST', f'{USER_API}/v1/auth/token', auth=False, json_body={
             'client_id': CLIENT_ID, 'grant_type': 'refresh_token',
             'refresh_token': self.session.data['refresh_token']}, headers=self._client_headers())
         if status != 200 or not body.get('access_token'):
+            # only an answer from the server proves the session is dead. A socket that
+            # never got there is a blip, and stopping a multi-day run over one would
+            # be a far worse failure than retrying it.
+            self.session_dead = status is not None
             raise PikPakError(f'会话续期失败: {body.get("error_description") or body}（请重新登录）',
                               status=status, action='refresh')
         self.session.store(self._token_record(body))
+        self.session_dead = False
         self.log('会话已自动续期')
 
     def ensure_session(self, force=False):

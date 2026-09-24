@@ -27,6 +27,7 @@ POLL_INTERVAL = 4
 POLL_TIMEOUT = 1800
 MAX_ATTEMPTS = 3
 THROTTLE_STOP = 3                     # consecutive refusals before giving up
+AUTH_STOP = 3                         # ... and consecutive 401/403s before blaming the session
 
 STATE_VERSION = 2
 
@@ -280,6 +281,7 @@ class Pipeline:
         self.files_done = 0
         self.bytes_done = 0
         self.throttle_hits = 0
+        self.auth_hits = 0
         self.starved_files = 0
 
     # -------------------------------------------------------------------- quota
@@ -335,6 +337,10 @@ class Pipeline:
         failed file, but they want opposite responses: back off, keep going on one
         connection, or re-login."""
         status = getattr(error, 'status', None)
+        if self.client.session_dead:
+            self.log('会话续期被服务器拒绝，停止本轮：请重新运行 --login '
+                     '后重跑同一命令（进度已保存）', 'error')
+            return True
         if getattr(error, 'throttled', False) or status in (429, 503):
             self.throttle_hits += 1
             if self.throttle_hits >= THROTTLE_STOP:
@@ -343,11 +349,18 @@ class Pipeline:
                 return True
             return False
         if status in (401, 403) and not isinstance(error, SegmentRefused):
-            # a dead session looks exactly like a refusal, and "wait an hour" would
-            # send the user the wrong way
-            self.log(f'凭据或会话被拒（HTTP {status}），请重新运行 --login 后重跑同一命令',
-                     'error')
-            return True
+            # PikPak answers 403 both for a dead session and for one share that has
+            # since been revoked or reported, and they look identical here. Dropping
+            # that single link costs the rest of a multi-day run nothing, so stop only
+            # once the refusals are the common factor rather than the exception.
+            self.auth_hits += 1
+            if self.auth_hits >= AUTH_STOP:
+                self.log(f'连续 {self.auth_hits} 次 HTTP {status} 被拒，更像会话或账号问题：'
+                         '请重新运行 --login 后重跑同一命令（进度已保存）', 'error')
+                return True
+            self.log(f'HTTP {status} 被拒，按本链接不可用处理后继续'
+                     f'（连续第 {self.auth_hits}/{AUTH_STOP} 次）', 'warn')
+            return False
         return False
 
     # ----------------------------------------------------------------- planning
@@ -541,6 +554,9 @@ class Pipeline:
             self.state.save()
             self.log(f'链接不可用 {job["share_id"][-8:]}: {error}', 'error')
             return 'throttled' if self.note_throttle(error) else 'error'
+        # a listing that answers is proof the credentials work, so anything refused
+        # further down is about that one file, not about the session
+        self.auth_hits = 0
         files = sorted(report['files'], key=lambda node: node['size'])
         link.update({'status': 'active', 'folder': job['folder'], 'title': report['title'],
                      'total_bytes': report['total'], 'file_count': len(files),
