@@ -18,12 +18,15 @@ same command and it picks up where it stopped.
 
 ## Install
 
-Requires Python 3.10+ and `curl` on PATH (used only for ranged parallel segments).
+Requires Python 3.10+, macOS or Linux, and `curl` on PATH (used for ranged parallel
+segments; the single-stream default does not need it). No third-party Python
+packages.
 
 ```bash
 git clone git@github.com:YJBeetle/PikpakGet.git
 cd PikpakGet
-python3 -m pikpakget --help
+python3 -m pikpakget --help          # run it in place
+pip install -e . && pikpakget --help  # or get a console script
 ```
 
 ## Use
@@ -54,7 +57,8 @@ that match neither go to `--default-folder`.
 Other useful entry points:
 
 ```bash
-python3 -m pikpakget links.txt --status        # per-folder progress, measured speed, ETA
+python3 -m pikpakget links.txt --status         # progress, measured speed, ETA
+python3 -m pikpakget --version
 python3 -m pikpakget --whoami                  # identity, quota, offline task slots
 python3 -m pikpakget links.txt --dry-run       # plan the work, change nothing
 python3 -m pikpakget links.txt --max-files 5   # dip a toe in
@@ -68,6 +72,7 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | `--state-dir DIR` | `./.pikpakget` | session, device id, `state.json`, single-instance lock |
 | `--connections N` | `4` | ranged connections per file; `1` = plain single stream |
 | `--gap SEC` | `20` | rest between files, keeps request density low |
+| `--log PATH` | `.pikpakget/grab-<date>.log` | `-` for stdout only |
 | `--limit N` / `--max-files N` | `0` (off) | stop after N links / N files |
 | `--inventory` | off | size up every link (count, bytes, largest file), no downloads |
 | `--dry-run` | off | no restores, no writes, no deletes |
@@ -135,6 +140,21 @@ seeded on reload for interrupted runs). `--purge-trash` is opt-in precisely beca
 emptying the trash is account-wide and cannot be undone; when it runs, the number
 and size of what it is about to remove is logged first.
 
+## File names
+
+Everything from one link lands flat in `--dest/<folder>/`, where `<folder>` comes
+from the links file. Remote names are somebody else's folder layout, so two files
+in different sub-folders can share a name: the second is stored as
+`<父目录名> - <文件名>`, then `... (2)`, and the choice is remembered in `state.json`
+so a resumed run re-writes the same path instead of creating a second copy.
+
+## Logging
+
+The same lines printed to the terminal are appended to
+`.pikpakget/grab-<date>.log`, because a multi-day run outlives the terminal.
+`--log -` disables it. `.pikpakget/` also holds `state.json`, the session and the
+device id, and is gitignored as a whole.
+
 ## Verification
 
 Downloaded files are verified by **byte count** against the drive listing. This is
@@ -162,7 +182,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream + ranged concurrent segments
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     29 tests on the pure logic; no account, no network
+tests/test_pure.py     42 tests on the pure logic; no account, no network
 ```
 
 ## Development
@@ -173,6 +193,12 @@ python3 -m unittest discover -s tests -t . -v
 
 The tests deliberately avoid any account or share data; the fixtures are synthetic
 ids. Please keep it that way if you add cases.
+
+## Platform notes
+
+Written against macOS and uses `fcntl` for the single-instance lock and POSIX path
+semantics; it has not been run on Windows. Long paths are clamped to 200 UTF-8 bytes
+per component to stay inside `NAME_MAX`.
 
 ## License
 
