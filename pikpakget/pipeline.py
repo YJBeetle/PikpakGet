@@ -291,7 +291,8 @@ class Pipeline:
         final = os.path.join(dest_dir, safe_name(node['name']))
         part = f'{final}.part'
         expected = node['size']
-        if os.path.exists(final):
+        # isfile, not exists: a stray directory at that path is not a finished file
+        if os.path.isfile(final):
             local = os.path.getsize(final)
             if expected and local == expected:
                 self.log(f'已存在且大小一致，跳过 {node["name"][:40]} ({human(local)})')
