@@ -183,6 +183,60 @@ class RunLinkHarness(unittest.TestCase):
         return self.pipeline.run_link(job), node
 
 
+class TestFailureClassification(unittest.TestCase):
+    """Three failures that look alike must not get one answer: a rate limit wants an
+    hour, an expired session wants --login, a signed link that 404s wants neither."""
+
+    def setUp(self):
+        import argparse
+        from pikpakget.pipeline import Log, Pipeline
+        dirpath = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=os.path.join(dirpath, '.state'), dest=dirpath,
+                                  max_files=0, connections=1, gap=0, repeat=0)
+        self.pipeline = Pipeline(args, Log(quiet=True))
+
+    def error(self, message, status=None, throttled=False):
+        from pikpakget.api import PikPakError
+        return PikPakError(message, status=status, throttled=throttled)
+
+    def test_an_expired_signed_link_is_not_a_rate_limit(self):
+        for _ in range(3):
+            stopped = self.pipeline.note_throttle(self.error('下载被拒: HTTP 404', status=404))
+            self.assertFalse(stopped, 'a 404 CDN link is not the CDN saying slow down')
+
+    def test_a_dead_session_asks_to_relogin_not_to_wait(self):
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            stopped = self.pipeline.note_throttle(self.error('会话续期失败: 403', status=403))
+        self.assertTrue(stopped)
+        self.assertIn('--login', buffer.getvalue())
+        self.assertNotIn('1 小时', buffer.getvalue())
+
+    def test_three_rate_limits_stop_the_run(self):
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            results = [self.pipeline.note_throttle(self.error('限流', status=429))
+                       for _ in range(3)]
+        self.assertEqual(results[:2], [False, False])
+        self.assertTrue(results[2])
+        self.assertIn('风控', buffer.getvalue())
+
+    def test_a_success_resets_the_consecutive_counter(self):
+        self.pipeline.note_throttle(self.error('限流', status=503))
+        self.pipeline.note_throttle(self.error('限流', status=503))
+        self.pipeline.throttle_hits = 0                    # what a completed file does
+        self.assertFalse(self.pipeline.note_throttle(self.error('限流', status=503)))
+        self.assertEqual(self.pipeline.throttle_hits, 1)
+
+    def test_a_refused_segment_lanes_down_without_stopping_the_run(self):
+        from pikpakget.stream import SegmentRefused
+        self.assertFalse(self.pipeline.note_throttle(SegmentRefused('分段被拒', status=403)))
+
+
 class TestSingleStreamInterrupt(unittest.TestCase):
     """README recommends one connection, and refusals/starvation fall back to it, so
     the single stream has to answer to Ctrl-C like the segmented path does."""

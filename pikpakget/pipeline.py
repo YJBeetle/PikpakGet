@@ -263,14 +263,24 @@ class Pipeline:
         self.wait_space_freed(size, before)
 
     def note_throttle(self, error):
-        throttled = getattr(error, 'throttled', False) or '被拒' in str(error) \
-            or getattr(error, 'status', None) in (403, 429, 503)
-        if not throttled:
+        """Decide whether to stop the run, with advice that matches the cause.
+
+        A rate limit, a refused byte range and an expired session all arrive as a
+        failed file, but they want opposite responses: back off, keep going on one
+        connection, or re-login."""
+        status = getattr(error, 'status', None)
+        if getattr(error, 'throttled', False) or status in (429, 503):
+            self.throttle_hits += 1
+            if self.throttle_hits >= THROTTLE_STOP:
+                self.log(f'连续 {self.throttle_hits} 次被限流，停止本轮以免触发风控；'
+                         '请至少 1 小时后再重跑同一命令（进度已保存）', 'error')
+                return True
             return False
-        self.throttle_hits += 1
-        if self.throttle_hits >= THROTTLE_STOP:
-            self.log(f'连续 {self.throttle_hits} 次疑似限流，停止本轮以免触发风控；'
-                     '请至少 1 小时后重跑同一命令（进度已保存）', 'error')
+        if status in (401, 403) and not isinstance(error, SegmentRefused):
+            # a dead session looks exactly like a refusal, and "wait an hour" would
+            # send the user the wrong way
+            self.log(f'凭据或会话被拒（HTTP {status}），请重新运行 --login 后重跑同一命令',
+                     'error')
             return True
         return False
 
@@ -530,6 +540,7 @@ class Pipeline:
                 self.state.save()
                 self.files_done += 1
                 self.bytes_done += node['size']
+                self.throttle_hits = 0      # the counter means *consecutive*
                 self.log(f'    {how}，云端已清理 -> {os.path.basename(local)[:56]}')
             except (PikPakError, OSError) as error:
                 record['state'] = 'failed' if record['attempts'] >= MAX_ATTEMPTS else 'retry'
