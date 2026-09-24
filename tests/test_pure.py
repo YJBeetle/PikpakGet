@@ -218,6 +218,36 @@ class TestSegmentRequest(unittest.TestCase):
         self.assertTrue(os.path.exists(self.item['path']))
 
 
+class TestQuotaWait(unittest.TestCase):
+    """After deleting a cloud copy the tool waits for the quota to fall. An
+    unrelated parked copy must not turn that into a 150 s stall on every file."""
+
+    def setUp(self):
+        import argparse
+        from pikpakget.pipeline import Log, Pipeline
+        dirpath = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=os.path.join(dirpath, '.state'), dest=dirpath,
+                                  max_files=0, connections=1, gap=0, repeat=0)
+        self.pipeline = Pipeline(args, Log(quiet=True))
+        self.readings = []
+
+    def feed(self, usages):
+        self.readings = list(usages)
+        self.pipeline.space = lambda: {'limit': 6_442_450_944, 'usage': self.readings.pop(0),
+                                       'in_trash': 0, 'free': 0}
+
+    def test_near_miss_is_accepted_immediately(self):
+        before, dropped = 2_127_000_000, 399_000_000
+        self.feed([1_727_000_000])                      # floor is 1_728_000_000
+        space = self.pipeline.wait_space_freed(dropped, before, timeout=1)
+        self.assertEqual(space['usage'], 1_727_000_000)
+
+    def test_a_real_stall_still_times_out(self):
+        self.feed([4_000_000_000, 4_000_000_000])
+        space = self.pipeline.wait_space_freed(399_000_000, 4_400_000_000, timeout=1)
+        self.assertEqual(space['usage'], 4_000_000_000)
+
+
 class TestLogQuiet(unittest.TestCase):
     """--quiet must silence the chatter but never a warning, or a stalled run looks
     healthy from the terminal."""

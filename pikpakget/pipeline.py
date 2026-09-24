@@ -205,10 +205,14 @@ class Pipeline:
         """The server is seconds behind `batchDelete`, and until the bytes come
         back the next restore will not fit."""
         floor = max((before or 0) - expect_drop, 0)
+        # accept a near-miss: an unrelated copy parked in the drive (an interrupted
+        # file that a later pass will reuse) keeps the absolute figure from ever
+        # landing exactly, and waiting it out costs 150s per file for nothing
+        tolerance = max(expect_drop * 0.02, 2_000_000)
         deadline = time.time() + timeout
         while time.time() < deadline:
             space = self.space()
-            if space['usage'] <= floor:
+            if space['usage'] <= floor + tolerance:
                 return space
             time.sleep(POLL_INTERVAL)
         space = self.space()
