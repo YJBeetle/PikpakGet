@@ -142,7 +142,6 @@ class TestNameCollisions(unittest.TestCase):
     and a silent overwrite would be data loss."""
 
     def setUp(self):
-        import argparse
         from pikpakget.pipeline import Log, Pipeline
         self.dir = tempfile.mkdtemp()
         self.dest = os.path.join(self.dir, 'library', 'OneSeries')
@@ -269,7 +268,6 @@ class TestStarvationFallback(unittest.TestCase):
     minutes of back-off for bytes a single connection would have delivered sooner."""
 
     def setUp(self):
-        import argparse
         from pikpakget.api import PikPakError
         from pikpakget.pipeline import Log, Pipeline
         self.dir = tempfile.mkdtemp()
@@ -360,7 +358,6 @@ class TestQuotaWait(unittest.TestCase):
     unrelated parked copy must not turn that into a 150 s stall on every file."""
 
     def setUp(self):
-        import argparse
         from pikpakget.pipeline import Log, Pipeline
         dirpath = tempfile.mkdtemp()
         args = argparse.Namespace(state_dir=os.path.join(dirpath, '.state'), dest=dirpath,
@@ -529,7 +526,6 @@ class TestStartupSweep(unittest.TestCase):
     user put there themselves — only copies our own state recorded."""
 
     def setUp(self):
-        import argparse
         from pikpakget.pipeline import Log, Pipeline
         self.dir = tempfile.mkdtemp()
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
@@ -588,7 +584,6 @@ class TestStopOnZeroProgress(unittest.TestCase):
     lands is exactly the hammering that gets an account flagged."""
 
     def setUp(self):
-        import argparse
         from pikpakget.pipeline import Log, Pipeline
         self.dir = tempfile.mkdtemp()
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
@@ -703,6 +698,7 @@ class TestSegmentSafetyValve(unittest.TestCase):
         self.probe('403')
         with self.assertRaises(SegmentRefused) as caught:
             self.run_download()
+        self.assertIn('403', str(caught.exception), 'the refusal code should be reported')
         self.assertTrue(self.probes, 'the CDN should be probed before giving up')
         self.assertTrue(issubclass(SegmentRefused, PikPakError))
 

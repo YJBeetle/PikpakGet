@@ -13,5 +13,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: lint (stdlib-only package; unused imports/vars are the realistic bugs)
+        run: |
+          pip install -q pyflakes
+          python -m pyflakes pikpakget/*.py tests/*.py
+      - name: installable, and the console script runs
+        run: |
+          pip install -q -e .
+          pikpakget --version
       # the suite is pure logic: no account, no network, no fixtures to leak
       - run: python -m unittest discover -s tests -t . -v
