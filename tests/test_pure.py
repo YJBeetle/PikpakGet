@@ -137,6 +137,76 @@ class TestSegments(unittest.TestCase):
         self.assertEqual(sum(item['want'] for item in plan), 2)
 
 
+class RunLinkHarness(unittest.TestCase):
+    """Drives the real run_link loop with the network and the cloud-side cleanup
+    replaced. The main chain had no coverage, which is exactly where four of the
+    reported bugs lived."""
+
+    def setUp(self):
+        import argparse
+        import pikpakget.pipeline as pipeline_module
+        from pikpakget.pipeline import Log, Pipeline
+        self.module = pipeline_module
+        self.dir = tempfile.mkdtemp()
+        self.lib = os.path.join(self.dir, 'lib')
+        os.makedirs(self.lib)
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'), dest=self.lib,
+                                  max_files=0, connections=1, gap=0, repeat=0,
+                                  dry_run=False, inventory_only=False, limit=0,
+                                  purge_trash=False, no_delete=True)
+        self.pipeline = Pipeline(args, Log(quiet=True))
+        self.pipeline.quota_limit = 6442450944
+        self.pipeline.space = lambda: {'limit': 6442450944, 'usage': 0, 'in_trash': 0,
+                                       'free': 6442450944}
+        self.pipeline.forget = lambda *a, **k: None
+        self.pipeline.wait_ready = lambda *a, **k: {}
+        self.pipeline.reuse_or_restore = lambda job, node, record, token: 'RESTORED'
+        self.pipeline.client.download_url = lambda fid: ('http://host/file', {})
+        self.addCleanup(setattr, pipeline_module, 'download_stream', pipeline_module.download_stream)
+        self.downloads = []
+
+    def fake_stream(self, url, target, expected=0, resume=0, *rest, **kwargs):
+        self.downloads.append((target, expected))
+        with open(target, 'wb') as handle:
+            handle.truncate(expected)
+        return expected
+
+    def run_one(self, name='a.mp4', size=100, path=None):
+        self.module.download_stream = self.fake_stream
+        node = {'id': 'SHAREFILE1', 'name': name, 'size': size,
+                'path': path or name, 'hash': None, 'is_folder': False}
+        self.pipeline.inventory = lambda job: {
+            'title': 'Series', 'token': 'TOKEN', 'files': [node],
+            'total': size, 'folders': 0}
+        job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111', 'share_id':
+               'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'Series', 'order': 1}
+        return self.pipeline.run_link(job), node
+
+
+class TestMovedDownloadsDoNotBreakTheRun(RunLinkHarness):
+    def test_a_moved_finished_file_is_redownloaded_instead_of_crashing(self):
+        gone = os.path.join(self.lib, 'Series', 'a.mp4')
+        record = self.pipeline.state.file('SHAREFILE1', 'https://mypikpak.com/s/EXAMPLEID1111111111')
+        record.update({'state': 'downloaded', 'local': gone, 'size': 100})
+        outcome, node = self.run_one()                      # before the fix: FileNotFoundError
+        self.assertEqual(len(self.downloads), 1)
+        self.assertEqual(self.downloads[0][1], 100)
+        self.assertEqual(self.pipeline.state.file('SHAREFILE1')['state'], 'done')
+        self.assertEqual(os.path.getsize(gone), 100)
+
+    def test_a_still_present_complete_file_is_skipped(self):
+        keep = os.path.join(self.lib, 'Series', 'a.mp4')
+        os.makedirs(os.path.dirname(keep))
+        with open(keep, 'wb') as handle:
+            handle.truncate(100)
+        self.pipeline.state.file('SHAREFILE1').update(
+            {'state': 'done', 'local': keep, 'size': 100,
+             'url': 'https://mypikpak.com/s/EXAMPLEID1111111111'})
+        outcome, node = self.run_one()
+        self.assertEqual(self.downloads, [])            # complete file, no re-download
+        self.assertEqual(outcome, 'ok')                 # nothing pending for this link
+
+
 class TestForeignFileIsNeverDeleted(unittest.TestCase):
     """A share reusing a filename the user already has is not a licence to delete
     the user's copy. This was data loss with a single warn line in the log."""

@@ -51,6 +51,19 @@ def _clip_bytes(text, limit):
     return encoded[:limit].decode('utf-8', 'ignore')
 
 
+def size_on_disk(path):
+    """Size of a local file, or None when it is not there.
+
+    A finished download is free to leave the library (that is the point of a
+    library), and a moved file must not crash every later run on the same record."""
+    if not path:
+        return None
+    try:
+        return os.path.getsize(path) if os.path.isfile(path) else None
+    except OSError:
+        return None
+
+
 def safe_name(name, limit=200):
     """Turn a remote file or folder name into one safe local path component,
     without tripping over NAME_MAX or path separators coming from the server."""
@@ -468,8 +481,7 @@ class Pipeline:
                            'local': record.get('local') or self.dest_path(node, dest_dir)})
             if record['state'] == 'done' and record.get('local') and os.path.exists(record['local']):
                 continue
-            if record['state'] == 'downloaded' and record.get('local') \
-                    and os.path.getsize(record['local']) == node['size']:
+            if record['state'] == 'downloaded' and size_on_disk(record.get('local')) == node['size']:
                 self.forget([record.get('restored_id')], node['size'])
                 record['state'] = 'done'
                 self.state.save()
