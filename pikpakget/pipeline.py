@@ -201,6 +201,7 @@ class Pipeline:
         self.files_done = 0
         self.bytes_done = 0
         self.throttle_hits = 0
+        self.starved_files = 0
 
     # -------------------------------------------------------------------- quota
     def space(self):
@@ -379,6 +380,18 @@ class Pipeline:
                 # connection and stay there for the rest of the run
                 self.log(f'{error}；本轮后续改用单连接', 'warn')
                 self.args.connections = 1
+                shutil.rmtree(seg_dir, ignore_errors=True)
+            except PikPakError as error:
+                # starved lanes cost 60+300+900s of back-off per file for bytes one
+                # connection would have delivered sooner; after two such files, stop
+                # paying that tuition for the rest of the run
+                if '分段多次未完成' not in str(error):
+                    raise
+                self.starved_files += 1
+                self.log(f'{error}；本文件改走单连接'
+                         + ('，后续所有文件也用单连接' if self.starved_files >= 2 else ''), 'warn')
+                if self.starved_files >= 2:
+                    self.args.connections = 1
                 shutil.rmtree(seg_dir, ignore_errors=True)
             else:
                 if got != expected:

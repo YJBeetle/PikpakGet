@@ -264,6 +264,56 @@ class TestSegmentRequest(unittest.TestCase):
         self.assertTrue(proc.waited)
 
 
+class TestStarvationFallback(unittest.TestCase):
+    """Starved lanes are not a server error to retry against: the segments cost
+    minutes of back-off for bytes a single connection would have delivered sooner."""
+
+    def setUp(self):
+        import argparse
+        from pikpakget.api import PikPakError
+        from pikpakget.pipeline import Log, Pipeline
+        self.dir = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
+                                  dest=os.path.join(self.dir, 'lib'), max_files=0,
+                                  connections=4, gap=0, repeat=0)
+        self.pipeline = Pipeline(args, Log(quiet=True))
+        self.PikPakError = PikPakError
+        self.stream_calls = []
+        self.pipeline.client.download_url = lambda fid: ('http://host/url', {})
+        import pikpakget.pipeline as pipeline
+        self.addCleanup(setattr, pipeline, 'download_segments', pipeline.download_segments)
+        self.addCleanup(setattr, pipeline, 'download_stream', pipeline.download_stream)
+
+    def starve(self, url_of, target, total, connections, **kwargs):
+        raise self.PikPakError('分段多次未完成，暂停本文件: 段 0,1,2,3')
+
+    def fake_stream(self, url, target, expected=0, resume=0, *args, **kwargs):
+        self.stream_calls.append((expected, resume))
+        with open(target, 'wb') as handle:
+            handle.truncate(expected)
+        return expected
+
+    def test_a_starved_file_falls_back_to_one_stream(self):
+        import pikpakget.pipeline as pipeline
+        pipeline.download_segments = self.starve
+        pipeline.download_stream = self.fake_stream
+        node = {'name': 'x.mp4', 'size': 5000, 'path': 'x.mp4', 'local': None}
+        final, how = self.pipeline.fetch_to('FILEID', node, os.path.join(self.dir, 'lib'))
+        self.assertEqual(self.stream_calls, [(5000, 0)])
+        self.assertEqual(how, 'downloaded')
+        self.assertEqual(self.pipeline.args.connections, 4)      # first time: keep trying
+
+    def test_two_starved_files_end_segmentation_for_the_run(self):
+        import pikpakget.pipeline as pipeline
+        pipeline.download_segments = self.starve
+        pipeline.download_stream = self.fake_stream
+        for name in ('a.mp4', 'b.mp4'):
+            node = {'name': name, 'size': 5000, 'path': name, 'local': None}
+            self.pipeline.fetch_to('FILEID', node, os.path.join(self.dir, 'lib'))
+        self.assertEqual(self.pipeline.args.connections, 1)
+        self.assertEqual(self.pipeline.starved_files, 2)
+
+
 class TestSegmentIdentity(unittest.TestCase):
     """Resuming a segment assumes those bytes are the prefix of the same content.
     A replaced upstream file breaks that assumption, so the stale prefix must go."""
