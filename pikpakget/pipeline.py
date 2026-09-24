@@ -28,7 +28,7 @@ POLL_TIMEOUT = 1800
 MAX_ATTEMPTS = 3
 THROTTLE_STOP = 3                     # consecutive refusals before giving up
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 
 
 def job_key(job):
@@ -56,6 +56,40 @@ def _clip_bytes(text, limit):
     if len(encoded) <= limit:
         return text
     return encoded[:limit].decode('utf-8', 'ignore')
+
+
+def migrate_state(data):
+    """Rewrite a v1 state file, whose links were keyed by bare share URL.
+
+    Links are now keyed by URL plus folder, so an unmigrated file leaves the old
+    records unreachable: the end-of-link check finds nothing pending and declares a
+    barely-started link done, which silently under-downloads."""
+    remap = {}
+    links = {}
+    for key, info in (data.get('links') or {}).items():
+        if '\t' in key:
+            links[key] = info
+        else:
+            target = f"{key}\t{info.get('folder') or ''}"
+            remap[key] = target
+            links.setdefault(target, info)
+    # the record already filed under the new key is the later word; a legacy record
+    # for the same link only supplies fields it never had
+    for key, info in (data.get('links') or {}).items():
+        if '\t' in key:
+            continue
+        target = links[remap[key]]
+        if target is info:
+            continue
+        for field, value in info.items():
+            if target.get(field) is None and value is not None:
+                target[field] = value
+    for record in (data.get('files') or {}).values():
+        if record.get('url') in remap:
+            record['url'] = remap[record['url']]
+    data['links'] = links
+    data['version'] = STATE_VERSION
+    return data
 
 
 def size_on_disk(path):
@@ -173,6 +207,9 @@ class State:
                     loaded = json.load(handle)
                 if loaded.get('version') == STATE_VERSION and isinstance(loaded.get('files'), dict):
                     self.data = loaded
+                elif loaded.get('version') == 1 and isinstance(loaded.get('links'), dict):
+                    self.data = migrate_state(loaded)
+                    self.save()
             except (ValueError, OSError) as error:
                 backup = f'{path}.corrupt-{time.strftime("%Y%m%d-%H%M%S")}'
                 shutil.copy2(path, backup)
@@ -594,8 +631,11 @@ class Pipeline:
                 if record['state'] == 'failed':
                     continue
                 return 'retry'
-        pending = [rec for rec in self.state.files_of(key)
-                   if rec['state'] not in ('done', 'too_big')]
+        # decided from the ids this listing produced, not from the url field on the
+        # records: a key format change must never be able to hide unfinished work
+        pending = [node_id for node_id in (item['id'] for item in files)
+                   if self.state.data['files'].get(node_id, {}).get('state')
+                   not in ('done', 'too_big')]
         link['status'] = 'done' if not pending else 'incomplete'
         link['pending_files'] = len(pending)
         self.state.save()

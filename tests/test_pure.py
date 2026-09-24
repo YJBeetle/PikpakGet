@@ -9,7 +9,8 @@ import unittest
 import argparse
 
 from pikpakget.api import captcha_sign, parse_share_url
-from pikpakget.pipeline import State, human, load_folder_map, read_links, safe_name
+from pikpakget.pipeline import (MAX_ATTEMPTS, STATE_VERSION, State, human, load_folder_map,
+                                read_links, safe_name)
 from pikpakget.stream import plan_segments
 
 
@@ -1128,6 +1129,96 @@ class TestState(unittest.TestCase):
         with open(self.path) as handle:
             json.load(handle)
         self.assertFalse(os.path.exists(self.path + '.tmp'))
+
+
+class TestStateMigration(unittest.TestCase):
+    """v1 keyed links by bare share URL, v2 by URL plus folder. Unmigrated records
+    are invisible to the new key, so a run would replan work it had already done."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, 'state.json')
+
+    def write_v1(self, data):
+        with open(self.path, 'w', encoding='utf-8') as handle:
+            json.dump(data, handle)
+
+    def test_link_keys_gain_their_folder_and_files_follow(self):
+        self.write_v1({'version': 1,
+                       'links': {'http://s/A': {'status': 'partial', 'folder': 'Series'}},
+                       'files': {'F1': {'state': 'done', 'url': 'http://s/A'}}})
+        state = State(self.path)
+        self.assertEqual(state.data['version'], STATE_VERSION)
+        self.assertEqual(list(state.data['links']), ['http://s/A\tSeries'])
+        self.assertEqual(state.file('F1')['url'], 'http://s/A\tSeries')
+
+    def test_migration_is_persisted_so_it_runs_once(self):
+        self.write_v1({'version': 1, 'links': {'http://s/A': {'folder': 'Series'}},
+                       'files': {}})
+        State(self.path)
+        with open(self.path, encoding='utf-8') as handle:
+            on_disk = json.load(handle)
+        self.assertEqual(on_disk['version'], STATE_VERSION)
+        self.assertIn('http://s/A\tSeries', on_disk['links'])
+
+    def test_a_link_already_seen_under_the_new_key_is_merged(self):
+        self.write_v1({'version': 1, 'links': {
+            'http://s/A': {'status': 'partial', 'folder': 'Series', 'title': 'Series'},
+            'http://s/A\tSeries': {'status': 'active', 'file_count': 8}},
+            'files': {}})
+        state = State(self.path)
+        self.assertEqual(len(state.data['links']), 1)
+        kept = state.data['links']['http://s/A\tSeries']
+        self.assertEqual(kept['status'], 'active')       # the newer record wins
+        self.assertEqual(kept['title'], 'Series')        # and nothing else is lost
+
+    def test_a_file_without_a_folder_migrates_to_the_empty_folder(self):
+        self.write_v1({'version': 1, 'links': {'http://s/A': {}}, 'files': {}})
+        state = State(self.path)
+        self.assertIn('http://s/A\t', state.data['links'])
+
+
+class TestStateKeyCannotHideWork(RunLinkHarness):
+    """The bug this guards: records created before the key change still carry the
+    bare URL, so grouping files by the link key returned nothing, `pending` looked
+    empty, and a link with two files left on the cloud was declared done."""
+
+    def seed_stale_record(self, file_id, url):
+        self.pipeline.state.data['files'][file_id] = {
+            'state': 'pending', 'attempts': self.module.MAX_ATTEMPTS - 1, 'url': url,
+            'restored_id': None, 'local': None, 'size': 100, 'seconds': None,
+            'error': None, 'name': 'a.mp4', 'path': 'a.mp4'}
+
+    def test_abandoned_file_keeps_the_link_incomplete(self):
+        url = 'https://mypikpak.com/s/EXAMPLEID1111111111'
+        self.seed_stale_record('SHAREFILE1', url)
+        def refuse(*rest, **kwargs):
+            raise OSError('connection reset')
+        self.module.download_stream = refuse
+        node = {'id': 'SHAREFILE1', 'name': 'a.mp4', 'size': 100, 'path': 'a.mp4',
+                'hash': None, 'is_folder': False}
+        self.pipeline.inventory = lambda job: {
+            'title': 'Series', 'token': 'TOKEN', 'files': [node],
+            'total': 100, 'folders': 0, 'truncated': False}
+        job = {'url': url, 'share_id': 'EXAMPLEID1111111111', 'pass_code': '',
+               'folder': 'Series', 'order': 1}
+        self.assertEqual(self.pipeline.run_link(job), 'incomplete')
+        self.assertEqual(self.pipeline.state.link(job['url'] + '\tSeries')['status'],
+                         'incomplete')
+
+    def test_finished_file_with_a_stale_url_is_not_downloaded_twice(self):
+        local = os.path.join(self.dir, 'already.mp4')
+        with open(local, 'wb') as handle:
+            handle.truncate(100)
+        self.seed_stale_record('SHAREFILE1', 'https://mypikpak.com/s/EXAMPLEID1')
+        self.pipeline.state.data['files']['SHAREFILE1'].update(
+            {'state': 'done', 'attempts': 1, 'local': local})
+        self.assertEqual(self.run_one()[0], 'ok')
+        self.assertEqual(self.downloads, [])
+        # the record keeps pointing at the key it was created under; nothing reads
+        # that field to decide whether work remains
+        self.assertEqual(self.pipeline.state.file('SHAREFILE1')['url'],
+                         'https://mypikpak.com/s/EXAMPLEID1')
 
 
 class TestHuman(unittest.TestCase):
