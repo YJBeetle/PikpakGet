@@ -183,6 +183,28 @@ class RunLinkHarness(unittest.TestCase):
         return self.pipeline.run_link(job), node
 
 
+class TestSweepBaseline(RunLinkHarness):
+    """The startup sweep must wait for the reclaimed bytes to come back, not for the
+    whole drive to empty."""
+
+    def test_reclaim_waits_against_usage_before_the_delete(self):
+        self.pipeline.state.file('SHAREFILE1').update(
+            {'restored_id': 'CLOUD1', 'state': 'restoring', 'size': 400})
+        self.pipeline.client.list_folder = lambda parent='*': [
+            {'kind': 'drive#file', 'id': 'CLOUD1', 'size': '400'}]
+        self.pipeline.client.cleanup = lambda ids: None
+        readings = iter([1000, 600])                  # 400 reclaimed, 600 unrelated left
+        self.pipeline.space = lambda: {'limit': 6442450944, 'usage': next(readings),
+                                       'in_trash': 0, 'free': 0}
+        waits = []
+        self.pipeline.wait_space_freed = lambda size, before=None: waits.append((size, before)) or {
+            'usage': 600}
+        self.pipeline.sweep_leftovers()
+        self.assertEqual(waits, [(400, 1000)],
+                         'before must be the usage read before the delete; passing the '
+                         'reclaimed size makes the floor 0 and stalls on any other file')
+
+
 class TestMovedDownloadsDoNotBreakTheRun(RunLinkHarness):
     def test_a_moved_finished_file_is_redownloaded_instead_of_crashing(self):
         gone = os.path.join(self.lib, 'Series', 'a.mp4')
@@ -667,6 +689,8 @@ class TestStartupSweep(unittest.TestCase):
         ])
         self.pipeline.client.list_folder = lambda parent_id='*', **kw: list(calls)
         self.pipeline.client.cleanup = lambda ids: self.removed.extend(ids)
+        self.pipeline.space = lambda: {'limit': 6_000_000_000, 'usage': 500,
+                                        'in_trash': 0, 'free': 5_500_000_000}
         self.pipeline.wait_space_freed = lambda size, before=None: {
             'limit': 6_000_000_000, 'usage': 0, 'in_trash': 0, 'free': 6_000_000_000}
         self.state = self.pipeline.state

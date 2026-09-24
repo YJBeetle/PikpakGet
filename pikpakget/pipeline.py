@@ -254,12 +254,13 @@ class Pipeline:
         size = sum(int(item.get('size') or 0) for item in victims)
         self.log(f'回收上次中断留下的 {len(victims)} 个云端副本（{human(size)}），'
                  '本地已完成的文件不受影响', 'info')
+        before = self.space()['usage']          # the reclaim baseline, not the size
         self.client.cleanup([item['id'] for item in victims])
         for item in victims:
             self.state.data['files'][tracked[item['id']]]['restored_id'] = None
             self.created.discard(item['id'])
         self.state.save()
-        self.wait_space_freed(size, before=size)
+        self.wait_space_freed(size, before)
 
     def note_throttle(self, error):
         throttled = getattr(error, 'throttled', False) or '被拒' in str(error) \
