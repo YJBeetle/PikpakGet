@@ -219,6 +219,29 @@ class Pipeline:
         self.log(f'云端空间未在 {timeout}s 内回落，当前占用 {human(space["usage"])}', 'warn')
         return space
 
+    def sweep_leftovers(self):
+        """At startup nothing is in flight, so this is the only safe moment to drop
+        the cloud copies an earlier interrupted run left behind: they would
+        otherwise occupy quota and make every later space check stall. Only ids that
+        our own state recorded are touched."""
+        tracked = {rec['restored_id']: key for key, rec in self.state.data['files'].items()
+                   if rec.get('restored_id') and rec['state'] not in ('done', 'too_big')}
+        if not tracked:
+            return
+        victims = [item for item in self.client.list_folder('*')
+                   if item.get('kind') == 'drive#file' and item.get('id') in tracked]
+        if not victims:
+            return
+        size = sum(int(item.get('size') or 0) for item in victims)
+        self.log(f'回收上次中断留下的 {len(victims)} 个云端副本（{human(size)}），'
+                 '本地已完成的文件不受影响', 'info')
+        self.client.cleanup([item['id'] for item in victims])
+        for item in victims:
+            self.state.data['files'][tracked[item['id']]]['restored_id'] = None
+            self.created.discard(item['id'])
+        self.state.save()
+        self.wait_space_freed(size, before=size)
+
     def note_throttle(self, error):
         throttled = getattr(error, 'throttled', False) or '被拒' in str(error) \
             or getattr(error, 'status', None) in (403, 429, 503)
@@ -501,6 +524,8 @@ class Pipeline:
         if not os.access(self.args.dest, os.W_OK):
             self.log(f'目标目录不可写: {self.args.dest}', 'error')
             return 2
+        if not self.args.no_sweep:
+            self.sweep_leftovers()
         space = self.space()
         self.quota_limit = space['limit']
         self.log(f'{len(jobs)} 个链接 -> {self.args.dest} | 云盘 '

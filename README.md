@@ -78,6 +78,7 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | `--dry-run` | off | no restores, no writes, no deletes |
 | `--no-delete` | off | keep cloud copies after downloading (fills the quota fast) |
 | `--purge-trash` | off | allow emptying the whole trash if the quota is the blocker |
+| `--no-sweep` | off | don't reclaim cloud copies an interrupted run left behind at startup |
 | `--folder-map FILE` | none | `url,folder` mapping for lines without a folder column |
 
 ## What the quota actually behaves like

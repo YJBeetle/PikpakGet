@@ -69,6 +69,9 @@ def build_parser():
     parser.add_argument('--dry-run', action='store_true', help='plan only; no writes, no deletes')
     parser.add_argument('--no-delete', action='store_true',
                         help='keep the cloud copies after downloading (fills the quota fast)')
+    parser.add_argument('--no-sweep', action='store_true',
+                        help='do not reclaim the cloud copies an earlier interrupted run '
+                             'left behind at startup (they otherwise occupy quota)')
     parser.add_argument('--purge-trash', action='store_true',
                         help='allow emptying the whole trash when the quota is the blocker')
     parser.add_argument('--yes', action='store_true', help='ignore unparsable link lines')

@@ -1,4 +1,5 @@
 """Tests for the pure logic. Synthetic data only — no live account, no real links."""
+import collections
 import json
 import os
 import tempfile
@@ -227,7 +228,8 @@ class TestQuotaWait(unittest.TestCase):
         from pikpakget.pipeline import Log, Pipeline
         dirpath = tempfile.mkdtemp()
         args = argparse.Namespace(state_dir=os.path.join(dirpath, '.state'), dest=dirpath,
-                                  max_files=0, connections=1, gap=0, repeat=0)
+                                  max_files=0, connections=1, gap=0, repeat=0,
+                                  no_sweep=True)
         self.pipeline = Pipeline(args, Log(quiet=True))
         self.readings = []
 
@@ -321,6 +323,65 @@ class TestSegmentResume(unittest.TestCase):
         self.assertEqual(command[command.index('--max-filesize') + 1], '100')
 
 
+class TestStartupSweep(unittest.TestCase):
+    """The sweep runs where nothing is in flight, and must never touch a file the
+    user put there themselves — only copies our own state recorded."""
+
+    def setUp(self):
+        import argparse
+        from pikpakget.pipeline import Log, Pipeline
+        self.dir = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
+                                  dest=os.path.join(self.dir, 'lib'), max_files=0,
+                                  connections=1, gap=0, repeat=0, no_sweep=False)
+        self.pipeline = Pipeline(args, Log(quiet=True))
+        self.removed = []
+        calls = collections.deque([
+            {'id': 'OURS_A', 'kind': 'drive#file', 'size': '10'},
+            {'id': 'SOMEONE_ELS', 'kind': 'drive#file', 'size': '99'},
+            {'id': 'FOLDER', 'kind': 'drive#folder', 'size': '0'},
+        ])
+        self.pipeline.client.list_folder = lambda parent_id='*', **kw: list(calls)
+        self.pipeline.client.cleanup = lambda ids: self.removed.extend(ids)
+        self.pipeline.wait_space_freed = lambda size, before=None: {
+            'limit': 6_000_000_000, 'usage': 0, 'in_trash': 0, 'free': 6_000_000_000}
+        self.state = self.pipeline.state
+        self.state.file('FILE_A', 'url')['state'] = 'restoring'
+        self.state.file('FILE_A', 'url')['restored_id'] = 'OURS_A'
+        self.state.file('FILE_B', 'url')['state'] = 'restoring'
+        self.state.file('FILE_B', 'url')['restored_id'] = 'OURS_B'      # gone already
+        self.state.file('FILE_DONE', 'url')['state'] = 'done'
+        self.state.file('FILE_DONE', 'url')['restored_id'] = 'DONE_ID'
+        self.state.save()
+
+    def sweep(self):
+        return self.pipeline.sweep_leftovers()
+
+    def test_only_our_recorded_copy_is_removed(self):
+        self.sweep()
+        self.assertEqual(self.removed, ['OURS_A'])
+
+    def test_foreign_files_and_folders_are_untouched(self):
+        self.sweep()
+        self.assertNotIn('SOMEONE_ELS', self.removed)
+        self.assertNotIn('FOLDER', self.removed)
+
+    def test_a_completed_file_is_never_reclaimed(self):
+        self.sweep()
+        self.assertNotIn('DONE_ID', self.removed)
+
+    def test_the_stale_reference_is_cleared_for_the_next_attempt(self):
+        self.sweep()
+        self.assertIsNone(self.state.data['files']['FILE_A']['restored_id'])
+
+    def test_nothing_happens_without_recorded_copies(self):
+        self.removed.clear()
+        for rec in self.state.data['files'].values():
+            rec['restored_id'] = None
+        self.sweep()
+        self.assertEqual(self.removed, [])
+
+
 class TestStopOnZeroProgress(unittest.TestCase):
     """Repeat passes exist to pick up transient failures; looping while nothing
     lands is exactly the hammering that gets an account flagged."""
@@ -332,6 +393,7 @@ class TestStopOnZeroProgress(unittest.TestCase):
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
                                   dest=os.path.join(self.dir, 'lib'), max_files=0,
                                   connections=1, gap=0, repeat=0, dry_run=True,
+                                  no_sweep=True,
                                   inventory_only=False, limit=0, purge_trash=False,
                                   no_delete=False, log='-', quiet=True)
         self.pipeline = Pipeline(args, Log(quiet=True))
