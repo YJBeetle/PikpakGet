@@ -1,6 +1,5 @@
 """Command line entry point."""
 import argparse
-import fcntl
 import getpass
 import os
 import signal
@@ -10,6 +9,11 @@ import time
 from . import __version__
 from .api import PikPakError, Client
 from .pipeline import Log, Pipeline, load_folder_map, read_links
+
+try:
+    import fcntl
+except ImportError:                                # Windows: no POSIX locks
+    fcntl = None
 
 STOP = False
 
@@ -104,6 +108,12 @@ def main(argv=None):
     if args.version:
         print(__version__)
         return 0
+    if fcntl is None:
+        # refuse rather than start a multi-day job with no second-instance guard, or
+        # worse: an unsynchronised one sharing its state file with another writer
+        print('单实例锁依赖 POSIX 的 fcntl，Windows 上不支持：请在 WSL 或 Linux/macOS 里运行',
+              file=sys.stderr)
+        return 2
     os.makedirs(args.state_dir, exist_ok=True)
     # an unattended run outlives the terminal, so the same lines that scroll past
     # are kept on disk (stdout stays the primary output)

@@ -230,10 +230,11 @@ class Client:
             'client_id': CLIENT_ID, 'grant_type': 'refresh_token',
             'refresh_token': self.session.data['refresh_token']}, headers=self._client_headers())
         if status != 200 or not body.get('access_token'):
-            # only an answer from the server proves the session is dead. A socket that
-            # never got there is a blip, and stopping a multi-day run over one would
-            # be a far worse failure than retrying it.
-            self.session_dead = status is not None
+            # only a refusal *of this credential* proves the session is dead: a 5xx is
+            # the auth endpoint being unhappy, and ending a multi-day run over that
+            # would be worse than retrying it. A socket that never got there proves
+            # nothing at all.
+            self.session_dead = status is not None and 400 <= status < 500
             raise PikPakError(f'会话续期失败: {body.get("error_description") or body}（请重新登录）',
                               status=status, action='refresh')
         self.session.store(self._token_record(body))
