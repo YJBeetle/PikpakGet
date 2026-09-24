@@ -133,6 +133,69 @@ class TestSegments(unittest.TestCase):
         self.assertEqual(sum(item['want'] for item in plan), 2)
 
 
+class TestSegmentSafetyValve(unittest.TestCase):
+    """The refusal-vs-starvation distinction is the risk-control safety valve: a
+    refusal must drop to one connection, an unlucky lane must not."""
+
+    class DeadProcess:
+        def poll(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    def setUp(self):
+        import pikpakget.stream as stream
+        self.stream = stream
+        self.dir = tempfile.mkdtemp()
+        self.target = os.path.join(self.dir, 'file.bin')
+        self.probes = []
+
+        def fake_spawn(item, url):
+            handle = open(item['path'], 'ab')         # touch it, but deliver nothing
+            handle.close()
+            return self.DeadProcess()
+
+        self.spawn = stream._spawn
+        stream._spawn = fake_spawn
+        self.addCleanup(setattr, stream, '_spawn', self.spawn)
+
+    def probe(self, code):
+        def fake(url, start=0, log=None, note=''):
+            self.probes.append(code)
+            return code
+        self.original = self.stream.probe_status
+        self.stream.probe_status = fake
+        self.addCleanup(setattr, self.stream, 'probe_status', self.original)
+
+    def run_download(self):
+        return self.stream.download_segments(lambda: 'http://invalid.invalid', self.target,
+                                             1000, 4, wait=lambda seconds: None,
+                                             log=lambda message, level='info': None)
+
+    def test_refusal_raises_segment_refused(self):
+        from pikpakget.api import PikPakError
+        from pikpakget.stream import SegmentRefused
+        self.probe('403')
+        with self.assertRaises(SegmentRefused) as caught:
+            self.run_download()
+        self.assertTrue(self.probes, 'the CDN should be probed before giving up')
+        self.assertTrue(issubclass(SegmentRefused, PikPakError))
+
+    def test_starvation_keeps_trying_and_does_not_blame_the_server(self):
+        from pikpakget.api import PikPakError
+        from pikpakget.stream import SegmentRefused
+        self.probe('206')
+        with self.assertRaises(PikPakError) as caught:
+            self.run_download()
+        self.assertNotIsInstance(caught.exception, SegmentRefused)
+        self.assertIn('未完成', str(caught.exception))
+
+    def test_segment_directory_is_scoped_to_its_width(self):
+        self.assertNotEqual(self.stream._segment_path('/tmp/a.part', 2),
+                            self.stream._segment_path('/tmp/a.part', 4))
+
+
 class TestCaptchaSign(unittest.TestCase):
     def test_shape_and_stability(self):
         sign, stamp = captcha_sign('CLIENTID', 'DEVICEID', timestamp='1700000000000')

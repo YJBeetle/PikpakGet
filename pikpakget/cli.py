@@ -48,9 +48,10 @@ def build_parser():
     parser.add_argument('--default-folder', default='(unfiled)',
                         help='folder name for lines without one (default: %(default)s)')
     parser.add_argument('--connections', type=int, default=4,
-                        help='ranged connections per file; 1 = plain single stream. '
-                             'Gains are sublinear (account-level shaping), so lower it '
-                             'if you see refusals')
+                        help='ranged connections per file. Use 1 for a plain single '
+                             'stream. On a free account extra lanes are often starved; '
+                             'if one is refused outright the run drops to 1 connection '
+                             'and stays there')
     parser.add_argument('--gap', type=float, default=20,
                         help='seconds to rest between files, to keep request density low')
     parser.add_argument('--limit', type=int, default=0, help='process at most N links')

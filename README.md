@@ -66,7 +66,7 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 |---|---|---|
 | `--dest DIR` | `./downloads` | root of the library; each folder becomes `DIR/<folder>/` |
 | `--state-dir DIR` | `./.pikpakget` | session, device id, `state.json`, single-instance lock |
-| `--connections N` | `4` | ranged connections per file. `1` = plain single stream |
+| `--connections N` | `4` | ranged connections per file; `1` = plain single stream |
 | `--gap SEC` | `20` | rest between files, keeps request density low |
 | `--limit N` / `--max-files N` | `0` (off) | stop after N links / N files |
 | `--inventory` | off | size up every link (count, bytes, largest file), no downloads |
@@ -91,14 +91,22 @@ Measured on a free account, and worth knowing before you plan a large run:
   in `--inventory` as `unfetchable` rather than attempted and left half-restored.
 - **Offline task slots are limited** (`quota.cloud_download`, 3 on free). Sequential
   single-file work stays well under it.
-- **Throughput is account-shaped, not per-connection.** Single connection measured
-  ~0.5–0.7 MB/s. Four ranged segments measured ~0.25 MB/s in aggregate, with two of
-  the four segments receiving nothing — i.e. segmentation buys you ~1.5× at best and
-  can be starved entirely. That is why it is a flag (`--connections`) defaulting to
-  4 rather than an assumption of speed, and why `--connections 1` is a sane setting
-  on a throttled account.
+- **Throughput is shaped per account, not per connection.** A single connection
+  measured 0.13–0.7 MB/s over the course of a long run (it drifts down with time of
+  day). Four ranged segments measured ~0.25 MB/s in aggregate, with two of the four
+  receiving *nothing* — so segmentation is worth ~1.5× at best and extra lanes are
+  routinely starved. The default is 4 because that still beat one stream in these
+  measurements, but `--connections 1` is the right answer if you would rather be
+  left alone by the CDN.
 
-Budget accordingly: 400 GB at 0.2–0.6 MB/s is roughly one to three weeks of
+When a round makes no progress, the tool probes the CDN with a one-byte range
+request to tell the two failure modes apart, because the correct reaction is
+opposite: a **refusal** (HTTP 4xx/5xx) is a policy signal, so the run drops to a
+single connection and stays there; a **starved** lane (2xx, no bytes) is just
+unlucky bandwidth shaping, so segments are retried with back-off instead of being
+abandoned file after file.
+
+Budget accordingly: 400 GB at 0.13–0.6 MB/s is roughly one to four weeks of
 continuous running.
 
 ## Being a good citizen (avoiding risk control)
@@ -108,7 +116,8 @@ the same public application client that the official mobile app and published
 open-source SDKs use, and it still goes through the shield captcha the server asks
 for. On top of that the tool deliberately slows itself down:
 
-- connections are opened one at a time (3 s apart) instead of in a burst;
+- when `--connections > 1`, lanes are opened one at a time (3 s apart) instead of
+  in a burst, and a refusal downgrades the whole run to one connection;
 - a refused or stalled segment is retried after 60 s → 300 s → 900 s, not instantly;
 - `429/503/slow down` responses back off for 30 s → 900 s and drop the cached
   captcha tokens;

@@ -17,7 +17,7 @@ import shutil
 import time
 
 from .api import PikPakError, Client, parse_share_url
-from .stream import download_segments, download_stream
+from .stream import SegmentRefused, download_segments, download_stream
 
 SPACE_HEADROOM = 400_000_000          # keep this much cloud space free
 LOCAL_HEADROOM = 20_000_000_000       # ... and this much on the target volume
@@ -298,16 +298,27 @@ class Pipeline:
                 return final, 'existing'
             self.log(f'已存在但大小不符（{human(local)} != {human(expected)}），重下', 'warn')
             os.remove(final)
-        seg_dir = f'{part}.segs'
-        legacy = os.path.exists(part) and os.path.getsize(part) > 0 and not os.path.exists(seg_dir)
+        seg_dir = f'{part}.segs{self.args.connections}'
+        # a half-finished single-stream .part keeps its progress: resume it as-is
+        # instead of restarting the file over segments
+        legacy = (os.path.exists(part) and os.path.getsize(part) > 0
+                  and not os.path.isdir(seg_dir))
         if self.args.connections > 1 and expected and not legacy:
-            got = download_segments(lambda: self.client.download_url(file_id)[0], part, expected,
-                                    self.args.connections, stop=self.stop, log=self.log,
-                                    seg_dir=seg_dir)
-            if got != expected:
-                raise PikPakError(f'拼装后大小不符 {got}/{expected}')
-            os.replace(part, final)
-            return final, 'downloaded'
+            try:
+                got = download_segments(lambda: self.client.download_url(file_id)[0], part,
+                                        expected, self.args.connections, stop=self.stop,
+                                        log=self.log)
+            except SegmentRefused as error:
+                # stop knocking on a refused door: finish this file on one
+                # connection and stay there for the rest of the run
+                self.log(f'{error}；本轮后续改用单连接', 'warn')
+                self.args.connections = 1
+                shutil.rmtree(seg_dir, ignore_errors=True)
+            else:
+                if got != expected:
+                    raise PikPakError(f'拼装后大小不符 {got}/{expected}')
+                os.replace(part, final)
+                return final, 'downloaded'
         resume = os.path.getsize(part) if os.path.exists(part) else 0
         url = self.client.download_url(file_id)[0]
         written = download_stream(url, part, expected, resume)
