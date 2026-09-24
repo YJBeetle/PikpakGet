@@ -1,5 +1,7 @@
 # PikpakGet
 
+English | [中文](README.cn.md)
+
 Sequentially grab PikPak share links with a small cloud quota. Pure standard
 library, no browser, no GUI automation, no official desktop client required.
 
@@ -73,6 +75,7 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | `--connections N` | `4` | ranged connections per file; `1` = plain single stream |
 | `--gap SEC` | `20` | rest between files, keeps request density low |
 | `--log PATH` | `.pikpakget/grab-<date>.log` | `-` for stdout only |
+| `--repeat N` | `0` (one pass) | re-pass the list to finish links that failed transiently; stops when a whole pass lands nothing |
 | `--limit N` / `--max-files N` | `0` (off) | stop after N links / N files |
 | `--inventory` | off | size up every link (count, bytes, largest file), no downloads |
 | `--dry-run` | off | no restores, no writes, no deletes |
@@ -183,7 +186,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream + ranged concurrent segments
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     42 tests on the pure logic; no account, no network
+tests/test_pure.py     61 tests on the pure logic; no account, no network
 ```
 
 ## Development
@@ -205,8 +208,9 @@ Stated plainly, because each one has bitten someone at some point:
 - **macOS is the only platform this has been run on.** Linux is expected to work
   (`fcntl`, `curl`, POSIX paths) but is untested; Windows is not supported.
 - **The refusal path is untested in the wild.** Dropping to one connection after an
-  HTTP 4xx/5xx is covered by unit tests, but no real refusal has been observed yet,
-  so the reaction is designed from the response shape rather than experience.
+  HTTP 4xx/5xx is covered by unit tests, but everything observed so far was
+  starvation (a lane that gets no bytes) rather than refusal, so that reaction is
+  designed from the response shape rather than from experience.
 - **A single file larger than your cloud quota cannot be fetched**, by any tool:
   it has to fit in the drive before it can be downloaded. These are skipped and
   counted as `unfetchable` in `--inventory`.
