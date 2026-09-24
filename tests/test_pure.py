@@ -9,8 +9,8 @@ import unittest
 import argparse
 
 from pikpakget.api import captcha_sign, parse_share_url
-from pikpakget.pipeline import (AUTH_STOP, MAX_ATTEMPTS, STATE_VERSION, State, human,
-                                load_folder_map, read_links, safe_name)
+from pikpakget.pipeline import (AUTH_STOP, STATE_VERSION, State, human, load_folder_map,
+                                read_links, safe_name)
 from pikpakget.stream import plan_segments
 
 
@@ -34,9 +34,13 @@ class TestShareUrl(unittest.TestCase):
 
 class TestSafeName(unittest.TestCase):
     def test_path_separators_cannot_escape(self):
-        name = safe_name('../../etc/passwd')
-        self.assertNotIn('/', name)
-        self.assertNotIn('..', name)
+        base = os.path.abspath('/library/FXX')
+        for name in ('../../etc/passwd', 'a/../b', '.'):
+            cleaned = safe_name(name)
+            self.assertNotIn('/', cleaned)
+            # what actually matters: the component always lands inside its directory
+            self.assertTrue(os.path.normpath(os.path.join(base, cleaned))
+                            .startswith(base + os.sep), cleaned)
 
     def test_windows_separators_and_control_chars(self):
         self.assertNotIn('\x00', safe_name('a\x00b/c'))
@@ -52,9 +56,6 @@ class TestSafeName(unittest.TestCase):
     def test_blank_names_fall_back(self):
         self.assertEqual(safe_name('   '), 'untitled')
         self.assertEqual(safe_name(''), 'untitled')
-
-    def test_dots_only_name_is_neutralised(self):
-        self.assertNotEqual(safe_name('..'), '')
 
 
 class TestLinksFile(unittest.TestCase):
@@ -229,17 +230,19 @@ class TestPerRunRetryBudget(unittest.TestCase):
 
 
 class TestDotFileNames(unittest.TestCase):
+    """A name that is *only* dots is the directory itself; a name with a pair of dots
+    inside it is just a filename. The rewrite used to treat both as traversal."""
+
     def test_dotfiles_keep_their_leading_dot(self):
         self.assertEqual(safe_name('.bashrc'), '.bashrc')
-
-    def test_parent_traversal_is_still_neutralised(self):
-        for name in ('../escape', '../../etc/passwd', 'a/../b'):
-            cleaned = safe_name(name)
-            self.assertNotIn('..', cleaned)
-            self.assertNotIn('/', cleaned)
-
-    def test_a_dotfile_name_survives_intact(self):
         self.assertEqual(safe_name('.gitignore'), '.gitignore')
+
+    def test_inner_double_dots_are_left_alone(self):
+        self.assertEqual(safe_name('movie..2 集.mp4'), 'movie..2 集.mp4')
+
+    def test_a_name_that_is_only_dots_cannot_stand_for_a_directory(self):
+        for name in ('.', '..', '  ..  '):
+            self.assertNotIn(safe_name(name), ('', '.', '..'))
 
 
 class TestShareTruncationFlag(unittest.TestCase):
@@ -1293,6 +1296,23 @@ class TestRefreshFailureIsNotAlwaysFatal(unittest.TestCase):
         with self.assertRaises(PikPakError):
             self.client.refresh()
         self.assertTrue(self.client.session_dead)
+
+
+class TestDocumentedCounts(unittest.TestCase):
+    """Both READMEs quote the number of tests, and both went stale silently. Counting
+    the suite from inside it keeps the claim tied to the code."""
+
+    def test_both_readmes_quote_the_real_number_of_tests(self):
+        import re
+        here = os.path.dirname(os.path.abspath(__file__))
+        total = unittest.defaultTestLoader.discover(here, pattern='test_*.py').countTestCases()
+        for name, pattern in (('README.md', r'(\d+) tests on the pure logic'),
+                              ('README.cn.md', r'(\d+) 项纯逻辑测试')):
+            with open(os.path.join(here, '..', name), encoding='utf-8') as handle:
+                quoted = re.search(pattern, handle.read())
+            self.assertIsNotNone(quoted, f'{name} 里找不到测试数量的说法')
+            self.assertEqual(int(quoted.group(1)), total,
+                             f'{name} 说 {quoted.group(1)} 项，实际 {total} 项')
 
 
 class TestHuman(unittest.TestCase):

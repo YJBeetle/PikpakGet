@@ -111,9 +111,11 @@ def safe_name(name, limit=200):
     without tripping over NAME_MAX or path separators coming from the server."""
     text = re.sub(r'[/\x00]', '_', str(name)).strip()
     text = re.sub(r'\s+', ' ', text).strip()
-    # a single leading dot is a dotfile and must survive; a double dot is traversal
-    # at any position once separators have been flattened, so break every pair up
-    text = text.replace('..', '_.')
+    # only a name that *is* '.' or '..' names another directory; once separators are
+    # flattened a pair of dots inside a title is just two dots, and rewriting those
+    # mangled filenames for protection nobody needed
+    if text in ('.', '..'):
+        text = '_' + text
     text = text.strip(' ')
     if len(text.encode('utf-8')) > limit:
         stem, dot, ext = text.rpartition('.')
