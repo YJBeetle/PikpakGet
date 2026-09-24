@@ -65,19 +65,49 @@ def _segment_have(item):
     return os.path.getsize(item['path']) if os.path.exists(item['path']) else 0
 
 
+def segment_request(item):
+    """Range and size limit for the next attempt at a segment, read from disk so a
+    retry resumes at the true current length instead of the length planned earlier.
+    `--max-filesize` is the guard: if the CDN ever ignores the Range header, curl
+    aborts rather than letting us append a whole second copy onto the segment."""
+    have = _segment_have(item)
+    remaining = item['want'] - have
+    return {'have': have, 'remaining': remaining,
+            'range': f"{item['start'] + have}-{item['end']}",
+            'max_filesize': remaining}
+
+
+def build_command(item, url):
+    request = segment_request(item)
+    return ['curl', '-sS', '--fail', '--speed-limit', str(STALL_LIMIT),
+            '--speed-time', str(STALL_SECONDS), '--retry', '2', '--retry-delay', '5',
+            '--max-filesize', str(request['max_filesize']),
+            '-r', request['range'], '-o', '-', '-A', 'Mozilla/5.0', url]
+
+
+def discard_overshot(plan, log=None):
+    """A segment longer than its range holds bytes from the wrong offset, which no
+    amount of trimming can repair: drop it and fetch that range again."""
+    dropped = []
+    for item in plan:
+        if _segment_have(item) > item['want']:
+            os.remove(item['path'])
+            dropped.append(item['index'])
+    if dropped and log:
+        log(f'分段越界，重新获取: 段 {dropped}', 'warn')
+    return dropped
+
+
 def _spawn(item, url):
-    """Fetch one segment's remaining bytes in append mode, so a retry continues
-    from the segment's current size instead of restarting it."""
+    """Fetch one segment's remaining bytes in append mode."""
+    if segment_request(item)['remaining'] <= 0:
+        return None
     handle = open(item['path'], 'ab')
-    command = ['curl', '-sS', '--fail', '--speed-limit', str(STALL_LIMIT),
-               '--speed-time', str(STALL_SECONDS), '--retry', '2', '--retry-delay', '5',
-               '-r', f"{item['start'] + item['have']}-{item['end']}",
-               '-o', '-', '-A', 'Mozilla/5.0', url]
     try:
-        process = subprocess.Popen(command, stdout=handle, stderr=subprocess.DEVNULL)
+        return subprocess.Popen(build_command(item, url), stdout=handle,
+                                stderr=subprocess.DEVNULL)
     finally:
         handle.close()
-    return process
 
 
 def probe_status(url, start=0, log=None, note=''):
@@ -154,12 +184,15 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
             for position, item in enumerate(missing):
                 if position:
                     wait(LAUNCH_STAGGER)
-                running.append((item, _spawn(item, url_of())))
+                process = _spawn(item, url_of())
+                if process is not None:
+                    running.append((item, process))
             for item, process in running:
                 while process.poll() is None:
                     if stop():
                         raise PikPakError('已中断（分段进度保留，重跑即续传）')
                     wait(2)
+            discard_overshot(plan, log)
         except PikPakError:
             for _, process in running:
                 process.terminate()

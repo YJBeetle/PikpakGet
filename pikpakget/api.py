@@ -111,7 +111,8 @@ class Session:
         self.data = {}
         if path and os.path.exists(path):
             try:
-                self.data = json.load(open(path, encoding='utf-8'))
+                with open(path, encoding='utf-8') as handle:
+                    self.data = json.load(handle)
             except (ValueError, OSError):
                 self.data = {}
 
@@ -152,12 +153,14 @@ def load_device_id(path):
     """A stable per-installation id, persisted so the shield does not see a new
     device on every run."""
     if os.path.exists(path):
-        stored = open(path, encoding='utf-8').read().strip()
+        with open(path, encoding='utf-8') as handle:
+            stored = handle.read().strip()
         if stored:
             return stored
     fresh = uuid.uuid4().hex
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-    open(path, 'w', encoding='utf-8').write(fresh)
+    with open(path, 'w', encoding='utf-8') as handle:
+        handle.write(fresh)
     return fresh
 
 

@@ -13,6 +13,7 @@ import glob as _glob
 import json
 import os
 import re
+import itertools
 import shutil
 import time
 
@@ -135,7 +136,8 @@ class State:
         self.data = {'version': STATE_VERSION, 'updated': None, 'links': {}, 'files': {}}
         if os.path.exists(path):
             try:
-                loaded = json.load(open(path, encoding='utf-8'))
+                with open(path, encoding='utf-8') as handle:
+                    loaded = json.load(handle)
                 if loaded.get('version') == STATE_VERSION and isinstance(loaded.get('files'), dict):
                     self.data = loaded
             except (ValueError, OSError) as error:
@@ -180,8 +182,16 @@ class Pipeline:
             if rec.get('restored_id') and rec.get('state') not in ('done', 'too_big'):
                 self.created.add(rec['restored_id'])
         self.quota_limit = 0
+        # (folder, filename) -> source path inside the share, so two files that
+        # happen to share a name inside one cluster cannot overwrite each other
+        self.used_names = {}
+        for rec in self.state.data['files'].values():
+            if rec.get('local'):
+                self.used_names[(os.path.dirname(rec['local']),
+                                 os.path.basename(rec['local']))] = rec.get('path', '')
         self.files_left = args.max_files or 1 << 30
         self.files_done = 0
+        self.bytes_done = 0
         self.throttle_hits = 0
 
     # -------------------------------------------------------------------- quota
@@ -283,12 +293,32 @@ class Pipeline:
             time.sleep(POLL_INTERVAL)
         raise PikPakError('等待云端文件就绪超时')
 
+    def dest_path(self, node, dest_dir):
+        """Final path for a share node, made unique inside the cluster folder.
+
+        Names come from someone else's folder layout, so collisions are normal;
+        the chosen name is remembered in state, which keeps a resumed run writing
+        to the same file instead of creating a second copy of it."""
+        name = safe_name(node['name'])
+        taken = self.used_names.get((dest_dir, name))
+        if taken and taken != node['path']:
+            parent = node['path'].rsplit('/', 2)[-2] if '/' in node['path'] else ''
+            name = safe_name(f'{parent} - {node["name"]}' if parent else node['path'])
+            bump = 2
+            while self.used_names.get((dest_dir, name)) not in (None, node['path']):
+                stem, dot, ext = name.rpartition('.')
+                name = f'{stem} ({bump}).{ext}' if dot else f'{name} ({bump})'
+                bump += 1
+            self.log(f'同名冲突，另存为 {name}', 'debug')
+        self.used_names[(dest_dir, name)] = node['path']
+        return os.path.join(dest_dir, name)
+
     def fetch_to(self, file_id, node, dest_dir):
         """Stream the file to its final folder. Downloading straight into the
         destination (via `.part`) means an interrupted run never leaves a partial
         file that looks complete."""
         os.makedirs(dest_dir, exist_ok=True)
-        final = os.path.join(dest_dir, safe_name(node['name']))
+        final = self.dest_path(node, dest_dir)
         part = f'{final}.part'
         expected = node['size']
         # isfile, not exists: a stray directory at that path is not a finished file
@@ -369,7 +399,8 @@ class Pipeline:
                 self.state.save()
                 return 'stopped'
             record = self.state.file(node['id'], job['url'])
-            record.update({'name': node['name'], 'size': node['size'], 'path': node['path']})
+            record.update({'name': node['name'], 'size': node['size'], 'path': node['path'],
+                           'local': record.get('local') or self.dest_path(node, dest_dir)})
             if record['state'] == 'done' and record.get('local') and os.path.exists(record['local']):
                 continue
             if record['state'] == 'downloaded' and record.get('local') \
@@ -420,6 +451,7 @@ class Pipeline:
                 record['error'] = None
                 self.state.save()
                 self.files_done += 1
+                self.bytes_done += node['size']
                 self.log(f'    {how}，云端已清理 -> {os.path.basename(local)[:56]}')
             except (PikPakError, OSError) as error:
                 record['state'] = 'failed' if record['attempts'] >= MAX_ATTEMPTS else 'retry'
@@ -473,18 +505,31 @@ class Pipeline:
             return self.report(jobs)
         if self.args.limit:
             jobs = jobs[:self.args.limit]
-        tally = collections.Counter()
-        for job in jobs:
-            if self.stop():
+        for pass_number in itertools.count(1):
+            if self.args.repeat and pass_number > self.args.repeat:
                 break
-            self.log(f'— [{job["order"]}/{len(jobs)}] {job["url"]}')
-            tally[self.run_link(job)] += 1
-            if tally.get('throttled'):
-                break
-        self.log(f'本轮结束：{dict(tally)} | 云盘占用 {human(self.space()["usage"])}')
-        unfinished = [url for url, info in self.state.data['links'].items()
-                      if info.get('status') != 'done']
-        self.log(f'未完成链接 {len(unfinished)} 个；重跑同一命令即可从断点继续')
+            tally, before_done, before_bytes = collections.Counter(), self.files_done, self.bytes_done
+            for job in jobs:
+                if self.stop():
+                    break
+                self.log(f'— 第{pass_number}轮 [{job["order"]}/{len(jobs)}] {job["url"]}')
+                tally[self.run_link(job)] += 1
+                if tally.get('throttled') or self.stop():
+                    break
+            self.log(f'第 {pass_number} 轮结束：{dict(tally)} | '
+                     f'云盘占用 {human(self.space()["usage"])}')
+            unfinished = [url for url, info in self.state.data['links'].items()
+                          if info.get('status') != 'done']
+            if not unfinished:
+                return 0
+            if self.files_done == before_done and self.bytes_done == before_bytes:
+                # nothing landed this pass: circling again would only burn quota and
+                # goodwill, so stop and let a human look
+                self.log(f'{len(unfinished)} 个链接仍未完成，且本轮零进展，停止重试。'
+                         '请看上面的失败原因后重跑同一命令', 'error')
+                return 1
+            self.log(f'{len(unfinished)} 个链接未完成，进入下一轮补齐')
+        self.log('重跑同一命令即可从断点继续')
         return 0
 
     def report(self, jobs):

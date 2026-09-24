@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pikpakget"
+description = "Sequentially grab PikPak share links, working around a small cloud quota"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dynamic = ["version"]
+dependencies = []
+keywords = ["pikpak", "downloader", "cloud-drive"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Internet",
+]
+
+[project.scripts]
+pikpakget = "pikpakget.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "pikpakget.__version__" }
+
+[tool.setuptools]
+packages = ["pikpakget"]

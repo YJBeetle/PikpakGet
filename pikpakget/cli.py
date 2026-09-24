@@ -5,7 +5,9 @@ import getpass
 import os
 import signal
 import sys
+import time
 
+from . import __version__
 from .api import PikPakError, Client
 from .pipeline import Log, Pipeline, load_folder_map, read_links
 
@@ -54,6 +56,10 @@ def build_parser():
                              'and stays there')
     parser.add_argument('--gap', type=float, default=20,
                         help='seconds to rest between files, to keep request density low')
+    parser.add_argument('--repeat', type=int, default=0,
+                        help='pass over the list up to N times, returning to links that '
+                             'had a transient failure (0 = one pass). Stops early if a '
+                             'whole pass lands nothing')
     parser.add_argument('--limit', type=int, default=0, help='process at most N links')
     parser.add_argument('--max-files', type=int, default=0, help='download at most N files')
     parser.add_argument('--inventory', dest='inventory_only', action='store_true',
@@ -66,6 +72,9 @@ def build_parser():
     parser.add_argument('--purge-trash', action='store_true',
                         help='allow emptying the whole trash when the quota is the blocker')
     parser.add_argument('--yes', action='store_true', help='ignore unparsable link lines')
+    parser.add_argument('--log', default='auto', help="write a log file into --state-dir "
+                                                     "(default), or '-' to log to stdout only")
+    parser.add_argument('--version', action='store_true', help='print version and exit')
     parser.add_argument('--quiet', action='store_true')
     return parser
 
@@ -85,7 +94,14 @@ def _acquire_lock(state_dir):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    log = Log(quiet=args.quiet)
+    if args.version:
+        print(__version__)
+        return 0
+    os.makedirs(args.state_dir, exist_ok=True)
+    # an unattended run outlives the terminal, so the same lines that scroll past
+    # are kept on disk (stdout stays the primary output)
+    log = Log(os.path.join(args.state_dir, f'grab-{time.strftime("%Y-%m-%d")}.log'),
+              args.quiet) if args.log != '-' else Log(quiet=args.quiet)
     client = Client(session_path=os.path.join(args.state_dir, 'session.json'),
                     device_id_path=os.path.join(args.state_dir, 'device_id'), logger=log)
     if args.login:

@@ -4,6 +4,8 @@ import os
 import tempfile
 import unittest
 
+import argparse
+
 from pikpakget.api import captcha_sign, parse_share_url
 from pikpakget.pipeline import State, human, load_folder_map, read_links, safe_name
 from pikpakget.stream import plan_segments
@@ -133,6 +135,89 @@ class TestSegments(unittest.TestCase):
         self.assertEqual(sum(item['want'] for item in plan), 2)
 
 
+class TestNameCollisions(unittest.TestCase):
+    """Remote names come from someone else's folders, so collisions are the norm
+    and a silent overwrite would be data loss."""
+
+    def setUp(self):
+        import argparse
+        from pikpakget.pipeline import Log, Pipeline
+        self.dir = tempfile.mkdtemp()
+        self.dest = os.path.join(self.dir, 'library', 'OneSeries')
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
+                                  max_files=0, dest=self.dest, connections=1, gap=0)
+        self.pipeline = Pipeline(args, Log(quiet=True))
+
+    def alloc(self, path):
+        return os.path.basename(self.pipeline.dest_path(
+            {'name': path.rsplit('/', 1)[-1], 'path': path}, self.dest))
+
+    def test_first_file_keeps_its_name(self):
+        self.assertEqual(self.alloc('一/同样的名字.mp4'), '同样的名字.mp4')
+
+    def test_second_file_with_same_name_gets_its_parent(self):
+        self.alloc('一/同样的名字.mp4')
+        self.assertEqual(self.alloc('二/同样的名字.mp4'), '二 - 同样的名字.mp4')
+
+    def test_reallocation_is_stable(self):
+        path = '一/同样的名字.mp4'
+        self.assertEqual(self.alloc(path), self.alloc(path))
+
+    def test_repeated_parent_still_diverges(self):
+        self.alloc('一/片.mp4')
+        self.alloc('二/片.mp4')
+        self.assertEqual(self.alloc('二/片.mp4 (2)'), '片.mp4 (2)')
+
+    def test_root_level_file_without_parent(self):
+        self.alloc('重名.mp4')
+        second = self.alloc('别的/重名.mp4')
+        self.assertTrue(second.endswith('.mp4'))
+        self.assertNotEqual(second, '重名.mp4')
+
+
+class TestSegmentRequest(unittest.TestCase):
+    """Regression cover for the bug where a retry re-read its resume offset from the
+    original plan and appended a duplicate copy onto the segment."""
+
+    def setUp(self):
+        import pikpakget.stream as stream
+        self.stream = stream
+        self.dir = tempfile.mkdtemp()
+        self.item = {'index': 0, 'path': os.path.join(self.dir, '000'),
+                     'start': 0, 'end': 999, 'want': 1000, 'have': 0}
+
+    def test_resume_offset_comes_from_the_file_not_the_plan(self):
+        with open(self.item['path'], 'wb') as handle:
+            handle.truncate(400)
+        self.item['have'] = 9999                      # a stale plan value
+        request = self.stream.segment_request(self.item)
+        self.assertEqual(request['range'], '400-999')
+        self.assertEqual(request['remaining'], 600)
+
+    def test_a_size_limit_is_sent_so_range_cannot_be_ignored_silently(self):
+        command = self.stream.build_command(self.item, 'http://invalid.invalid/url')
+        self.assertIn('--max-filesize', command)
+        self.assertEqual(command[command.index('--max-filesize') + 1], '1000')
+
+    def test_complete_segment_is_not_fetched_again(self):
+        with open(self.item['path'], 'wb') as handle:
+            handle.truncate(1000)
+        self.assertIsNone(self.stream._spawn(self.item, 'http://invalid.invalid/url'))
+
+    def test_overshot_segment_is_dropped_and_reported(self):
+        with open(self.item['path'], 'wb') as handle:
+            handle.truncate(1500)                    # bytes from the wrong offset
+        dropped = self.stream.discard_overshot([self.item])
+        self.assertEqual(dropped, [0])
+        self.assertFalse(os.path.exists(self.item['path']))
+
+    def test_exact_segment_survives(self):
+        with open(self.item['path'], 'wb') as handle:
+            handle.truncate(1000)
+        self.assertEqual(self.stream.discard_overshot([self.item]), [])
+        self.assertTrue(os.path.exists(self.item['path']))
+
+
 class TestSegmentSafetyValve(unittest.TestCase):
     """The refusal-vs-starvation distinction is the risk-control safety valve: a
     refusal must drop to one connection, an unlucky lane must not."""
@@ -244,7 +329,8 @@ class TestState(unittest.TestCase):
         state = State(self.path)
         state.link('url-a')['status'] = 'active'
         state.save()
-        json.load(open(self.path))
+        with open(self.path) as handle:
+            json.load(handle)
         self.assertFalse(os.path.exists(self.path + '.tmp'))
 
 
