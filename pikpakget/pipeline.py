@@ -118,9 +118,12 @@ class Log:
 
     def __call__(self, message, level='info'):
         stamp = time.strftime('%H:%M:%S')
-        if level == 'debug' and not os.environ.get('PIKPAKGET_DEBUG'):
+        debug_on = os.environ.get('PIKPAKGET_DEBUG')
+        if level == 'debug' and not debug_on:
             return
-        print(f'{stamp} {level.upper()[:4]} {message}', flush=True)
+        # --quiet still surfaces warnings, otherwise a stalled run looks healthy
+        if not (self.quiet and level not in ('warn', 'error')):
+            print(f'{stamp} {level.upper()[:4]} {message}', flush=True)
         if self.handle:
             self.handle.write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} '
                               f'{level.upper()[:4]} {message}\n')

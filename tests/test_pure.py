@@ -218,6 +218,126 @@ class TestSegmentRequest(unittest.TestCase):
         self.assertTrue(os.path.exists(self.item['path']))
 
 
+class TestLogQuiet(unittest.TestCase):
+    """--quiet must silence the chatter but never a warning, or a stalled run looks
+    healthy from the terminal."""
+
+    def test_info_suppressed_warning_kept(self):
+        import contextlib
+        import io
+        from pikpakget.pipeline import Log
+        quiet = Log(quiet=True)
+        loud = Log(quiet=False)
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            quiet('进度 50%', 'info')
+            quiet('被限流', 'warn')
+            loud('普通一行', 'info')
+        printed = buffer.getvalue()
+        self.assertNotIn('进度 50%', printed)
+        self.assertIn('被限流', printed)
+        self.assertIn('普通一行', printed)
+
+    def test_debug_is_opt_in(self):
+        import contextlib
+        import io
+        from pikpakget.pipeline import Log
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            Log(quiet=False)('内部细节', 'debug')
+        self.assertEqual(buffer.getvalue(), '')
+
+
+class TestSegmentResume(unittest.TestCase):
+    """A retry must read its offset from the file as it stands now. Trusting the
+    length recorded when the plan was built re-downloads overlapping bytes and
+    appends them, which silently grows the file past its real size."""
+
+    def setUp(self):
+        import pikpakget.stream as stream
+        self.stream = stream
+        self.dir = tempfile.mkdtemp()
+
+    def item(self, index, start, end, have=0):
+        path = os.path.join(self.dir, f'{index:03d}')
+        if have:
+            with open(path, 'wb') as handle:
+                handle.truncate(have)
+        return {'index': index, 'path': path, 'start': start, 'end': end,
+                'want': end - start + 1, 'have': 0}
+
+    def test_offset_follows_the_file_not_the_plan(self):
+        item = self.item(1, 1000, 1999, have=300)          # 300 bytes already down
+        request = self.stream.segment_request(item)
+        self.assertEqual(request['range'], '1300-1999')
+        self.assertEqual(request['remaining'], 700)
+        self.assertEqual(request['max_filesize'], 700)
+
+    def test_complete_segment_needs_no_request(self):
+        item = self.item(0, 0, 499, have=500)
+        self.assertEqual(self.stream.segment_request(item)['remaining'], 0)
+
+    def test_overshot_segment_is_dropped_not_truncated(self):
+        good = self.item(0, 0, 499, have=500)
+        bad = self.item(1, 500, 999, have=560)             # bytes from a bad offset
+        dropped = self.stream.discard_overshot([good, bad])
+        self.assertEqual(dropped, [1])
+        self.assertTrue(os.path.exists(good['path']))
+        self.assertFalse(os.path.exists(bad['path']))
+
+    def test_range_is_capped_so_a_ignoring_cannot_double_the_file(self):
+        command = self.stream.build_command(self.item(2, 200, 299), 'http://host/url')
+        self.assertIn('--max-filesize', command)
+        self.assertEqual(command[command.index('--max-filesize') + 1], '100')
+
+
+class TestStopOnZeroProgress(unittest.TestCase):
+    """Repeat passes exist to pick up transient failures; looping while nothing
+    lands is exactly the hammering that gets an account flagged."""
+
+    def setUp(self):
+        import argparse
+        from pikpakget.pipeline import Log, Pipeline
+        self.dir = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
+                                  dest=os.path.join(self.dir, 'lib'), max_files=0,
+                                  connections=1, gap=0, repeat=0, dry_run=True,
+                                  inventory_only=False, limit=0, purge_trash=False,
+                                  no_delete=False, log='-', quiet=True)
+        self.pipeline = Pipeline(args, Log(quiet=True))
+        os.makedirs(args.dest, exist_ok=True)
+        self.pipeline.space = lambda: {'limit': 6_000_000_000, 'usage': 0,
+                                       'in_trash': 0, 'free': 6_000_000_000}
+        self.calls = 0
+
+        def failing_link(job):
+            self.calls += 1
+            self.pipeline.state.link(job['url'])['status'] = 'error'
+            return 'error'
+        self.pipeline.run_link = failing_link
+        self.jobs = [{'url': 'https://mypikpak.com/s/EXAMPLEID1111111111', 'share_id':
+                      'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'S', 'order': 1}]
+
+    def test_a_zero_progress_pass_stops_instead_of_retrying_forever(self):
+        self.assertEqual(self.pipeline.run(self.jobs), 1)
+        self.assertEqual(self.calls, 1)
+
+    def test_repeat_limit_is_respected_when_progress_happens(self):
+        self.pipeline.args.repeat = 2
+        state = {'n': 0}
+
+        def occasionally_ok(job):
+            state['n'] += 1
+            if state['n'] % 2:
+                self.pipeline.bytes_done += 10
+                self.pipeline.files_done += 1
+            self.pipeline.state.link(job['url'])['status'] = 'error'
+            return 'error'
+        self.pipeline.run_link = occasionally_ok
+        self.pipeline.run(self.jobs)
+        self.assertLessEqual(state['n'], 4)
+
+
 class TestSegmentSafetyValve(unittest.TestCase):
     """The refusal-vs-starvation distinction is the risk-control safety valve: a
     refusal must drop to one connection, an unlucky lane must not."""
