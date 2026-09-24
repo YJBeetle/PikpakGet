@@ -3,7 +3,7 @@
 This project aims to follow Keep a Changelog and SemVer. Below 1.0.0 the command
 line and module APIs may change between releases.
 
-## Unreleased
+## 0.1.2
 
 ### Fixed
 - **A link could be declared finished while files were still missing.** 0.1.1 started
