@@ -15,6 +15,7 @@ import os
 import re
 import itertools
 import shutil
+import sys
 import time
 
 from .api import PikPakError, Client, parse_share_url
@@ -175,7 +176,9 @@ class State:
             except (ValueError, OSError) as error:
                 backup = f'{path}.corrupt-{time.strftime("%Y%m%d-%H%M%S")}'
                 shutil.copy2(path, backup)
-                print(f'状态文件无法解析（{error}），已备份到 {backup}，本次从头规划')
+                # stderr, so it cannot pollute a machine-read progress listing
+                print(f'状态文件无法解析（{error}），已备份到 {backup}，本次从头规划',
+                      file=sys.stderr)
 
     def link(self, url):
         return self.data['links'].setdefault(url, {'status': 'pending', 'attempts': 0})

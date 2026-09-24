@@ -1,51 +1,92 @@
-# 更新记录
+# Changelog
 
-格式参考 Keep a Changelog，版本号遵循 SemVer。本项目在 1.0.0 之前不承诺接口稳定。
+This project aims to follow Keep a Changelog and SemVer. Below 1.0.0 the command
+line and module APIs may change between releases.
 
-## 0.1.0（预发布）
+## 0.1.1
 
-第一个可用版本，已在真实账号上连续运行验证。
+Fixes from a line-by-line review of the code shipped in 0.1.0. Four of them were
+found in code paths the test suite did not cover, so the main download loop now has a
+test harness of its own.
 
-### 功能
--  PikPak 网页端同款 HTTP 接口，纯标准库，不需要浏览器、不需要 GUI 自动化
--  密码登录一次建立可自续期的独立会话（`--login`，会话文件 0600，`--logout` 删除）
--  逐个文件处理：转存 → 下载 → 按字节校验 → 永久删除云端副本 → 等配额回落 → 下一个，
-   这是 6 GiB 配额下唯一能跑通的形状
--  只读枚举分享（`--inventory`）：不占云空间地算出文件数、体积、最大单文件、超配额文件数
--  断点续传：`state.json` 在每个副作用之前落盘，Ctrl-C 或崩溃后重跑同一命令即续传
--  下载目录内按聚类/文件夹名归档，远端重名自动加父目录前缀与序号，且定名记入状态不漂移
--  单实例锁，避免两个进程同时转存同一批链接
--  分段并发下载（`--connections`）：默认 4；实测收益是次线性的（约 1.5×），因为限速是账号级
--  进度视图 `--status`：每个文件夹已下/计划字节、实测速度、按实测速度算的剩余时间
+### Fixed
+- **A file you put in the library yourself could be deleted without asking.** If a
+  share contained the same filename with a different size, `fetch_to` removed your
+  copy and wrote the download over it, leaving one warn line in the log. Anything the
+  tool did not download is now renamed to `<name>.conflict-<timestamp>` and kept.
+- **A moved download crashed every later run.** The `state == downloaded` branch
+  called `os.path.getsize` on a path that the user is free to move away (that is the
+  point of a library), raising `FileNotFoundError` past `run_link`/`run`/`main` and
+  wedging on the same record forever. Size lookup is now total and the record simply
+  falls back to being downloaded again.
+- **The startup sweep waited for the wrong thing.** It passed the reclaimed byte count
+  as the "usage before the delete" baseline, making the floor 0: with any other file in
+  the drive, every startup polled to the 150 s timeout and logged a false
+  "space did not come back" warning. The baseline is now read before the delete.
+- **Three different failures were treated as rate limiting.** An expired CDN link
+  (`下载被拒: HTTP 404`) and an expired session (403) both counted towards the
+  "three consecutive throttles stop the run" rule, and the counter never reset, so the
+  documented behaviour was really "three times per run". Rate limit, refused lane and
+  dead session are now distinguished, an expired session says to re-run `--login`, and
+  a completed file resets the counter.
+- **Ctrl-C did not interrupt a single-stream download.** `download_segments` polls for
+  a stop every 2 s; `download_stream` never checked, even though `--connections 1` is
+  what README recommends and what the tool falls back to after a refusal or starvation.
+  For a 7 GiB file, "finishing the current file" meant hours.
+- **The same share could only be filed into one folder.** Link state was keyed by URL
+  alone, so listing one share twice with two destination folders silently skipped the
+  second. Links are now keyed by URL plus folder, and unfinished work is measured
+  against this run's list rather than every link state has ever seen (which turned a
+  fully successful run into an extra pass plus exit code 1).
+- **`attempts` accumulated for the life of a file**, so three transient hiccups over
+  any number of runs made later runs give up on the first glitch. Failed and retried
+  files now start each run with a fresh budget; completed and over-quota records are
+  untouched.
+- **A capped share listing was silent.** `walk_share` stopped at `max_nodes` without a
+  word, so `--inventory` under-reported and a link could still be marked done. A
+  `truncated` flag is now returned, logged, and stored on the link.
+- **The session file had a readable window.** It was created under the default umask
+  and chmodded afterwards; it is now created `0600` and stays that way across the
+  atomic replace.
+- **Dotfiles were renamed by the sanitizer.** `safe_name` stripped leading dots, so
+  `.bashrc` lost its dot. Path traversal is still broken up at any position, and
+  leading dots are preserved.
+- `--quiet` no longer prints info chatter (warnings still do), and the corrupt-state
+  notice goes to stderr so `--status` output stays machine-readable.
+- Stopped tracking `pikpakget.egg-info/`, and fixed ignore patterns that never matched
+  the real `<file>.part.segs4` segment directories.
 
-### 风控与自我约束
--  连接错峰打开，不瞬间拉满
--  分段失败按 60/300/900 秒退避重试，不即时猛撞
--  区分「被拒」与「饿死」：一段无进展时先用 1 字节 range 探测，4xx/5xx 视为策略信号 →
-   整轮降为单连接；2xx 无字节视为带宽整形 → 两个文件后也停用分段
--  接口层 429/503/slow down 走 30→900 秒退避并清掉验证码缓存
--  连续 3 次疑似限流直接停止本轮，提示一小时后再来，绝不硬撞
--  文件之间默认停 20 秒（`--gap`）降低请求密度
--  只删除本工具自己创建的 file id；清空回收站必须显式 `--purge-trash`，且会先打印将删条目数与体积
+### Added
+- Test harness that drives the real `run_link` loop with the network and cloud cleanup
+  replaced, plus regression tests for every fix above (91 tests).
+- CI gained a pyflakes gate (zero warnings in the package), a `pip install -e .` plus
+  console-script smoke test, and Python 3.14 in the matrix.
+- README: an options table that actually lists every flag, and a corrections pass on
+  two English sentences broken by the unit switch.
 
-### 修复
--  分段重试曾按建计划时记录的偏移续传，导致重复追加字节、拼出的文件大于源文件
-    （偏移改为读磁盘现状，每个 range 带 `--max-filesize`，越界字节只写不读）
--  分段目录曾按宽度命名但不校验，换 `--connections` 或上游换内容后会把别的字节当同一条
-    （目录名带上宽度，并记录 total 字节数，尺寸变化即清空）
--  上一轮 curl 未真正退出就开下一轮，造成"丢弃→重取"震荡（回收子进程时等待其退出）
--  `--quiet` 曾经完全不生效；现在静音流水信息但仍保留告警，避免卡死的任务看起来正常
--  日志曾只输出到终端，多日无人值守一关终端就什么都不剩（现落 `.pikpakget/grab-<日期>.log`）
--  目标路径上若存在同名目录，不再被当成"已下完的文件"
--  中断遗留的云端副本会在启动时回收，否则每个文件都会白等 150 秒配额回落
--  连接级抖动不再把整条链接判定为不可用（曾因此跳过 400GB 的主链接）
--  体积单位统一为二进制（KB/MB/GB → KiB/MiB/GiB）：配额 6442450944 字节本就是 6 GiB，
-    此前标成 "6 GB" 与十进制统计相差 7%，两处数字看着像漏了文件
+## 0.1.0
 
-### 已知限制（发布说明里同样写明）
--  完整性只能校验字节数：PikPak 的 `hash` 字段不是文件 SHA-1，没有可信上游校验和可比对
--  真实下载路径只在 macOS 上跑过；Linux 仅验证了安装与纯逻辑测试，Windows 不支持
--  「被 4xx/5xx 拒绝 → 降级」只有单测覆盖，真实环境至今只观察到带宽饿死
--  单文件超过云盘配额则完全无法获取（只能跳过并计入 `unfetchable`）
--  多日长稳运行尚未验证；文档中的速度是某晚观测值（MiB/s），随时段漂移
--  未发布到 PyPI，需从仓库安装
+First usable release, validated by running continuously against a real account.
+
+### Added
+- Same HTTP API the official desktop client uses: standard library only, no browser,
+  no GUI automation, no desktop client required.
+- One password sign-in creates an independently refreshable session (`--login`, stored
+  `0600`, `--logout` removes it).
+- One file at a time: restore, download, verify the byte count, permanently delete the
+  cloud copy, wait for the quota to come back, continue. This is the only shape that
+  works under a 6 GiB quota.
+- Read-only `--inventory` to size links up without touching cloud space.
+- Resumable by design: state is journalled before every side effect, so `Ctrl-C` or a
+  reboot costs at most the file in flight, and re-running resumes instead of duplicating.
+- Folder-map and collision-safe naming inside `--dest/<folder>/`.
+- Segmented downloading (`--connections`), sublinear in practice because the account
+  is shaped; refuses downgrade it to one connection.
+- `--status`, single-instance lock, log file, and unit labels in binary (GiB).
+
+### Known limitations
+- Integrity is byte count only; PikPak's `hash` field is not a file SHA-1.
+- Only macOS has run the real download path; Windows is not supported.
+- The refusal downgrade path is unit tested but has not been observed in the wild.
+- Files larger than the cloud quota cannot be fetched at all.
+- Multi-day stability was unproven at release time.
