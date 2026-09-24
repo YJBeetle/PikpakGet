@@ -161,9 +161,13 @@ def probe_status(url, start=0, log=None, note=''):
 
 
 def download_stream(url, target, expected_size=0, resume_from=0, timeout=300,
-                    on_progress=None):
+                    on_progress=None, stop=lambda: False):
     """Fetch a whole file into `target`, resuming with Range when the server
-    honours it. Returns the number of bytes on disk."""
+    honours it. Returns the number of bytes on disk.
+
+    `stop` is checked between blocks: this is the path README recommends
+    (`--connections 1`) and the one the tool falls back to after refusals or
+    starvation, so an unchecked loop made Ctrl-C mean hours on a large file."""
     import urllib.error
     import urllib.request
     headers = {'User-Agent': 'Mozilla/5.0', 'Accept-Encoding': 'identity'}
@@ -178,6 +182,8 @@ def download_stream(url, target, expected_size=0, resume_from=0, timeout=300,
             started = time.time()
             with open(target, 'ab' if written else 'wb') as handle:
                 while True:
+                    if stop():
+                        raise PikPakError('已中断（.part 已保留，重跑即续传）')
                     block = response.read(CHUNK)
                     if not block:
                         break

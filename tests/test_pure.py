@@ -183,6 +183,38 @@ class RunLinkHarness(unittest.TestCase):
         return self.pipeline.run_link(job), node
 
 
+class TestSingleStreamInterrupt(unittest.TestCase):
+    """README recommends one connection, and refusals/starvation fall back to it, so
+    the single stream has to answer to Ctrl-C like the segmented path does."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.src = os.path.join(self.dir, 'source.bin')
+        with open(self.src, 'wb') as handle:
+            handle.truncate(3 << 20)
+        self.target = os.path.join(self.dir, 'out.part')
+
+    def test_a_requested_stop_keeps_the_partial_file(self):
+        from pikpakget.api import PikPakError
+        from pikpakget.stream import download_stream
+        with self.assertRaises(PikPakError) as caught:
+            download_stream('file://' + self.src, self.target, 3 << 20, stop=lambda: True)
+        self.assertIn('已中断', str(caught.exception))
+        # an interrupted .part is a resume point, not garbage: a later call has to be
+        # able to finish the file from wherever it stopped
+        self.assertLessEqual(os.path.getsize(self.target) if os.path.exists(self.target) else 0,
+                             3 << 20)
+        from pikpakget.stream import download_stream
+        self.assertEqual(download_stream('file://' + self.src, self.target, 3 << 20,
+                                        resume_from=os.path.getsize(self.target)
+                                        if os.path.exists(self.target) else 0), 3 << 20)
+
+    def test_it_finishes_when_nobody_stops_it(self):
+        from pikpakget.stream import download_stream
+        self.assertEqual(download_stream('file://' + self.src, self.target, 3 << 20), 3 << 20)
+        self.assertEqual(os.path.getsize(self.target), 3 << 20)
+
+
 class TestSweepBaseline(RunLinkHarness):
     """The startup sweep must wait for the reclaimed bytes to come back, not for the
     whole drive to empty."""

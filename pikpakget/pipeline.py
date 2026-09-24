@@ -431,7 +431,7 @@ class Pipeline:
                 return final, 'downloaded'
         resume = os.path.getsize(part) if os.path.exists(part) else 0
         url = self.client.download_url(file_id)[0]
-        written = download_stream(url, part, expected, resume)
+        written = download_stream(url, part, expected, resume, stop=self.stop)
         if expected and written != expected:
             raise PikPakError(f'下载不完整 {written}/{expected}')
         os.replace(part, final)
