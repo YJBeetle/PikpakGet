@@ -128,6 +128,8 @@ for. On top of that the tool deliberately slows itself down:
 
 - when `--connections > 1`, lanes are opened one at a time (3 s apart) instead of
   in a burst, and a refusal downgrades the whole run to one connection;
+  two files whose segments are merely *starved* also end segmentation for the run,
+  because 60+300+900 s of back-off per file is slower than one honest connection;
 - a refused or stalled segment is retried after 60 s → 300 s → 900 s, not instantly;
 - `429/503/slow down` responses back off for 30 s → 900 s and drop the cached
   captcha tokens;
@@ -211,7 +213,8 @@ Stated plainly, because each one has bitten someone at some point:
 - **The refusal path is untested in the wild.** Dropping to one connection after an
   HTTP 4xx/5xx is covered by unit tests, but everything observed so far was
   starvation (a lane that gets no bytes) rather than refusal, so that reaction is
-  designed from the response shape rather than from experience.
+  designed from the response shape rather than from experience. Starvation handling is
+  exercised in practice: two starved files end segmentation for the rest of the run.
 - **A single file larger than your cloud quota cannot be fetched**, by any tool:
   it has to fit in the drive before it can be downloaded. These are skipped and
   counted as `unfetchable` in `--inventory`.
