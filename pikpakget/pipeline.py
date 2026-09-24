@@ -27,6 +27,7 @@ LOCAL_HEADROOM = 20_000_000_000       # ... and this much on the target volume
 POLL_INTERVAL = 4
 POLL_TIMEOUT = 1800
 MAX_ATTEMPTS = 3
+QUARANTINE_SUFFIX = '.unverified'     # bytes we keep but cannot vouch for
 THROTTLE_STOP = 3                     # consecutive refusals before giving up
 AUTH_STOP = 3                         # ... and consecutive 401/403s before blaming the session
 
@@ -285,6 +286,7 @@ class Pipeline:
         self.bytes_done = 0
         self.throttle_hits = 0
         self.auth_hits = 0
+        self.hash_hint = None           # block size the last file verified at
         self.starved_files = 0
 
     # -------------------------------------------------------------------- quota
@@ -529,23 +531,26 @@ class Pipeline:
         return self.promote(part, final, node, record)
 
     def verify(self, jobs):
-        """Re-check every file state claims to have downloaded against the hash the
-        share still reports.
+        """Re-check every file the state claims to have downloaded, using the hash the
+        share still reports, and quarantine the ones that fail.
 
-        Read-only apart from the state file, and it deletes nothing: a mismatch is a
-        report, and re-running the same download command is the fix (a `done` record
-        that this flags has to be reset by hand, which is deliberate — losing the
-        record is worse than losing the bandwidth)."""
-        checked, suspect, absent, unknown = 0, [], [], 0
+        Quarantining is what makes "re-run the download command" the actual fix: the
+        suspect bytes are renamed to `<name>.unverified` — kept as evidence, and
+        because 500 MiB is not free to fetch twice — and the record goes back to
+        `pending`, so the next pass writes a fresh copy under the original name. A
+        file that was quarantined and now hashes out is moved back into place."""
+        checked, suspect, absent, unknown, skipped = 0, [], [], 0, 0
         for job in jobs:
             try:
                 report = self.inventory(job)
             except PikPakError as error:
-                self.log(f'{job["folder"]}: 读不到清单，无法校验: {error}', 'error')
-                return 1
+                # one dead share must not stop the sweep over everything else
+                skipped += 1
+                self.log(f'{job["folder"]}: 读不到清单，这个链接暂时没法复核: {error}', 'warn')
+                continue
             for node in report['files']:
                 record = self.state.data['files'].get(node['id'])
-                if not record or record.get('state') != 'done':
+                if not record or record.get('state') not in ('done', 'unverified'):
                     continue
                 local = record.get('local')
                 if not local or not os.path.exists(local):
@@ -554,44 +559,79 @@ class Pipeline:
                 if not node['hash']:
                     unknown += 1
                     continue
-                if size_on_disk(local) != node['size']:
-                    suspect.append((node['name'], f"大小 {size_on_disk(local)} != {node['size']}"))
-                    continue
-                cached = record.get('hash_piece')
-                sizes = (cached, *PIECE_SIZES) if cached else PIECE_SIZES
-                piece = verify_content(local, node['hash'], sizes)
+                piece = None
+                if size_on_disk(local) == node['size']:
+                    piece = verify_content(local, node['hash'], self.hash_sizes(record))
                 if piece is None:
-                    suspect.append((node['name'], f"内容 hash 不符 {node['hash'][:12]}…"))
-                else:
-                    record['hash_piece'] = piece
-                    checked += 1
+                    self.quarantine(local, f"云端 {node['hash'][:16]}… 无候选分片命中", record)
+                    record.update({'state': 'pending', 'local': None, 'attempts': 0})
+                    suspect.append(node['name'])
+                    continue
+                record.update({'hash_piece': piece, 'state': 'done', 'error': None})
+                if local.endswith(QUARANTINE_SUFFIX):
+                    home = local[:-len(QUARANTINE_SUFFIX)]
+                    os.replace(local, home)
+                    record['local'] = home
+                    self.log(f'  隔离的文件复核通过，放回 {os.path.basename(home)[:52]}')
+                checked += 1
         self.state.save()
-        self.log(f'校验完成：{checked} 个文件内容 hash 相符，{len(suspect)} 个可疑，'
-                 f'{len(absent)} 个不在原位，{unknown} 个云端没给 hash')
-        for name, why in suspect:
-            self.log(f'  需重下：{why}  {name[:60]}', 'error')
+        self.log(f'校验完成：{checked} 个内容 hash 相符，{len(suspect)} 个已隔离并退回重下，'
+                 f'{len(absent)} 个本地不在，{unknown} 个云端没给 hash，'
+                 f'{skipped} 个链接读不到清单')
         for name in absent:
             self.log(f'  本地没有：{name[:60]}', 'warn')
         return 1 if suspect else 0
 
 
+    def hash_sizes(self, record=None):
+        """Remembered block sizes first. One share is usually one client with one
+        size, so the size this file (or the file before it) actually verified at beats
+        starting the search at 1 MiB again for every 500 MiB."""
+        for size in ((record or {}).get('hash_piece'), self.hash_hint):
+            if size:
+                return (size, *(candidate for candidate in PIECE_SIZES if candidate != size))
+        return PIECE_SIZES
+
+    def quarantine(self, path, reason, record=None):
+        """Move bytes the server's hash does not explain out of the way **without
+        deleting them**.
+
+        The hash rule is reverse engineered and the block size is the uploader's
+        client's choice, so "no candidate reproduced it" is unproven rather than
+        proven bad — and those bytes may be an hour of quota that nobody can fetch
+        again on a whim. The `.unverified` name is what a human sees in the folder."""
+        doomed = path + QUARANTINE_SUFFIX
+        if os.path.exists(doomed):
+            doomed = f'{doomed}-{time.strftime("%Y%m%d-%H%M%S")}'
+        os.replace(path, doomed)
+        if record is not None:
+            record.update({'state': 'unverified', 'local': doomed, 'hash_piece': None,
+                           'error': reason[:300]})
+        self.log(f'内容核对不过（{reason}），字节保留为 {os.path.basename(doomed)}', 'error')
+        return doomed
+
     def promote(self, part, final, node, record=None):
         """Let the bytes become the real file only once the server's content hash
-        reproduces. Size cannot tell a shifted segment from a good one: the wrong
-        file plays perfectly up to the byte where it stopped being the right one.
+        reproduces, and remember which block size did it.
 
-        A hash that no block size reproduces is treated as damage, not as "cannot
-        check" — the file is dropped and retried, and after MAX_ATTEMPTS it is
-        reported instead of being kept."""
+        While retries remain, a mismatch deletes the `.part`: the damage two writers
+        on one segment leave behind is a file of the right length with a shifted
+        middle, and refetching is what clears it. On the last attempt the bytes are
+        quarantined instead of deleted, because a block size nobody has seen is not
+        evidence of damage."""
         expected = (node or {}).get('hash')
         if expected:
-            piece = verify_content(part, expected)
+            piece = verify_content(part, expected, self.hash_sizes(record))
             if piece is None:
+                reason = f'云端 {expected[:16]}… 无候选分片命中'
+                if record is not None and record.get('attempts', 0) >= MAX_ATTEMPTS:
+                    return self.quarantine(part, reason, record), 'unverified'
                 os.remove(part)
-                raise PikPakError(f'内容 hash 与云端不符（{expected[:16]}…），已丢弃待重下')
-            self.log(f'内容 hash 已核对（{piece >> 10} KiB 分片）')
+                raise PikPakError(f'内容 hash 与云端不符（{reason}），丢弃重下')
             if record is not None:
-                record['hash_piece'] = piece        # --verify starts with this size
+                record['hash_piece'] = piece
+            self.hash_hint = piece
+            self.log(f'内容 hash 已核对（{piece >> 10} KiB 分片）')
         os.replace(part, final)
         return final, 'downloaded'
 
@@ -650,6 +690,17 @@ class Pipeline:
                            'local': record.get('local') or self.dest_path(node, dest_dir)})
             if record['state'] == 'done' and record.get('local') and os.path.exists(record['local']):
                 continue
+            if record['state'] == 'unverified':
+                if size_on_disk(record.get('local')):
+                    # an hour of quota is not worth re-litigating an unproven rule on
+                    # every pass, so the quarantined copy stays put until a human
+                    # deletes it or --verify gets a different answer
+                    continue
+                # the quarantine was deleted: that is the ask to fetch it again
+                record['state'] = 'pending'
+                record['attempts'] = 0
+                if (record.get('local') or '').endswith(QUARANTINE_SUFFIX):
+                    record['local'] = record['local'][:-len(QUARANTINE_SUFFIX)]
             if record['state'] == 'downloaded' and size_on_disk(record.get('local')) == node['size']:
                 self.forget([record.get('restored_id')], node['size'])
                 record['state'] = 'done'
@@ -689,6 +740,11 @@ class Pipeline:
                 restored = self.reuse_or_restore(job, node, record, report['token'])
                 self.wait_ready(restored, node['size'])
                 local, how = self.fetch_to(restored, node, dest_dir, record)
+                if how == 'unverified':
+                    self.forget([restored], node['size'])
+                    self.files_done += 1          # bytes landed; the verdict is separate
+                    self.state.save()
+                    continue
                 record.update({'state': 'downloaded', 'local': local,
                                'seconds': round(time.time() - started, 1)})
                 self.state.save()
@@ -843,6 +899,9 @@ class Pipeline:
             done = sum(1 for rec in records if rec['state'] == 'done')
             share = (got / planned * 100) if planned else 0
             note = f'  ({over} over quota)' if over else ''
+            unverified = sum(1 for rec in records if rec['state'] == 'unverified')
+            if unverified:
+                note += f'  ({unverified} unverified)'
             folder = (info.get('folder') or url[-10:])[:25]
             print(f'{folder:<26}{(info.get("status") or "-"):<12}{len(records):>7}{done:>6}'
                   f'{human(got):>11}{human(planned):>11}  {share:5.1f}% '

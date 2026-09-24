@@ -3,6 +3,39 @@
 This project aims to follow Keep a Changelog and SemVer. Below 1.0.0 the command
 line and module APIs may change between releases.
 
+## Unreleased
+
+### Fixed
+- **"No candidate block size reproduced the hash" no longer means "the file is
+  corrupt".** The rule is reverse engineered and the uploader's block size has no
+  documented set — a library of 26 files used three of them. A file that matches none
+  is now refetched while attempts remain, and on the last attempt the bytes are kept
+  as `<name>.unverified` and recorded as unverified instead of being deleted. The run
+  reports it, `--status` counts it, and deleting the quarantined file is what asks for
+  another fetch.
+- **`--verify` now fixes what it finds.** It previously reported a suspect file and
+  left the record at `done`, so the next download run skipped it and the only repair
+  path was editing `state.json` by hand. A suspect file is now quarantined and put back
+  in the queue, and a quarantined file that hashes out at a later sweep is moved back
+  under its original name.
+- **One unreadable share ended the whole `--verify` sweep.** A link whose listing
+  fails is counted and skipped now, so the rest of the library still gets checked.
+- **A 5xx from the auth endpoint was treated as a dead session**, which stopped a
+  multi-day run and told the user to re-login over a server-side hiccup. Only a 4xx
+  refusal marks the session dead now.
+- `hashlib.sha1` is requested with `usedforsecurity=False` where the interpreter
+  supports it, so a FIPS build of Python can still compute the content hash.
+
+### Changed
+- The block size that verified a file is remembered per file *and* used first for the
+  next file in the run: one share is usually one client with one size, and trying the
+  list from 1 MiB every time costs a full extra pass over 500 MiB.
+- `README.md`'s flow diagram had a duplicated step, and the block-size figures claimed
+  one size that turned out to be three.
+- The three comments about segments written past their range now state the rule in one
+  place, together with the two guards (`reap` waits, `--max-filesize`) that keep it
+  from recurring.
+
 ## 0.1.3
 
 ### Added

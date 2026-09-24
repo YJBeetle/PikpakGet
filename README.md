@@ -10,7 +10,7 @@ and a shared folder is routinely hundreds of GB to tens of TB. You cannot "save 
 — so this tool works one *file* at a time:
 
 ```
-restore one file into your drive  →  download it  →  download it  →  verify its content hash
+restore one file into your drive  →  download it  →  verify its content hash
       →  permanently delete the cloud copy  →  wait for the quota to drop  →  next
 ```
 
@@ -78,7 +78,7 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | `--repeat N` | `0` (one pass) | re-pass the list to finish links that failed transiently; stops when a whole pass lands nothing |
 | `--limit N` / `--max-files N` | `0` (off) | stop after N links / N files |
 | `--inventory` | off | size up every link (count, bytes, largest file), no downloads |
-| `--verify` | off | re-check every already-downloaded file against the server's content hash; deletes nothing, exits 1 on a mismatch |
+| `--verify` | off | re-check every already-downloaded file against the server's content hash; quarantines what fails as `<name>.unverified` (never deletes), exits 1 on a mismatch |
 | `--dry-run` | off | no restores, no writes, no deletes |
 | `--no-delete` | off | keep cloud copies after downloading (fills the quota fast) |
 | `--purge-trash` | off | allow emptying the whole trash if the quota is the blocker |
@@ -173,10 +173,21 @@ device id, and is gitignored as a whole.
 Every file is checked against PikPak's own content hash before its `.part` is
 renamed into place. That `hash` is *not* the file's SHA-1 — it is the SHA-1 of the
 concatenated SHA-1s of each fixed-size block, and the block size is whatever the
-uploader's client used (1 MiB on most files seen here, 512 KiB on another), so
-`stream.verify_content` tries a short list of sizes. A file that no size reproduces
-is deleted and re-fetched, because a byte count cannot see the damage two writers on
-one segment leave behind: a file of exactly the right length with a shifted middle.
+uploader's client chose: a library of 26 files came back as 1 MiB (15), 2 MiB (8) and
+512 KiB (1). `stream.verify_content` therefore tries a list of sizes, and the one that
+worked is remembered and tried first for the next file.
+
+This is the check that catches what a byte count cannot: two writers appending one
+segment leave a file of exactly the right length with a shifted middle.
+
+When no candidate size reproduces the hash the tool does not conclude the file is
+bad — the rule is reverse engineered and the uploader's block size is unbounded. It
+refetches while attempts remain, and on the last one it **keeps the bytes** as
+`<name>.unverified`, records the file as unverified, and says so in the log. Delete
+that file to ask for another fetch. `--verify` re-checks the whole library: a
+quarantined file that now hashes out is moved back into place, and a healthy file that
+no longer does is quarantined and put back in the queue, so re-running the download
+command really is the fix.
 
 ## Security notes
 
@@ -196,7 +207,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     116 tests on the pure logic; no account, no network
+tests/test_pure.py     124 tests on the pure logic; no account, no network
 ```
 
 ## Development
@@ -214,12 +225,15 @@ Stated plainly, because each one has bitten someone at some point:
 
 - **The hash rule is reverse engineered, not documented.** Verification trusts an
   inferred reading of PikPak's `hash` (SHA-1 over per-block SHA-1s, block size taken
-  from a candidate list). A file whose hash no candidate reproduces is re-downloaded
-  up to three attempts and then reported as failed — the conservative direction, but
-  it spends bandwidth when a server-side hash is simply stale. TLS still covers
-  transit; nothing covers a bad server-side copy that hashes to itself.
+  from a candidate list that has already had to grow once). A file no candidate
+  reproduces costs up to three refetches before it is parked as `.unverified` — the
+  bytes are never deleted over a guess, but a server-side hash that is simply stale
+  costs that bandwidth. TLS covers transit; nothing covers a bad server-side copy that
+  hashes to itself.
 - **macOS is the only platform this has been run on.** Linux is expected to work
-  (`fcntl`, `curl`, POSIX paths) but is untested; Windows is not supported.
+  (`fcntl`, `curl`, POSIX paths) but is untested. Windows is not supported: the CLI
+  loads (`--version`, `--help`) and then refuses to start with an explanation, because
+  the single-instance lock is POSIX `fcntl`.
 - **The refusal path is untested in the wild.** Dropping to one connection after an
   HTTP 4xx/5xx is covered by unit tests, but everything observed so far was
   starvation (a lane that gets no bytes) rather than refusal, so that reaction is

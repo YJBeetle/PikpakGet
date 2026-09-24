@@ -29,10 +29,29 @@ PROBE_BYTES = 1
 
 # PikPak's `hash` is not the SHA-1 of the file: it is the SHA-1 of the concatenated
 # SHA-1s of each fixed-size block, the size being whatever the uploader's client used.
-# Observed on real files: 1 MiB (most) and 512 KiB. Tried in this order, so a good
-# file normally costs one pass.
-PIECE_SIZES = (1 << 20, 512 << 10, 2 << 20, 4 << 20, 8 << 20, 16 << 20, 32 << 20,
+# There is no documented set of sizes and no upper bound on it — a downloaded library
+# of 26 files came back as 1 MiB (15), 2 MiB (8) and 512 KiB (1), so the list below is
+# a best guess at "what clients do", and `verify_content` returning None means *not
+# proven*, which the caller must not read as "proven corrupt".
+PIECE_SIZES = (1 << 20, 2 << 20, 512 << 10, 4 << 20, 8 << 20, 16 << 20, 32 << 20,
                256 << 10, 128 << 10, 64 << 10)
+
+
+def _sha1(data=b''):
+    """FIPS builds of Python refuse `hashlib.sha1` unless the caller says the use is
+    not security-related; this is a content fingerprint, so it honestly can."""
+    if _sha1.supports_flag is None:
+        try:
+            hashlib.sha1(usedforsecurity=False)
+            _sha1.supports_flag = True
+        except TypeError:
+            _sha1.supports_flag = False
+    if _sha1.supports_flag:
+        return hashlib.sha1(data, usedforsecurity=False)
+    return hashlib.sha1(data)
+
+
+_sha1.supports_flag = None
 
 
 def _read_block(handle, size):
@@ -50,27 +69,29 @@ def _read_block(handle, size):
 
 def content_hash(path, piece):
     """SHA-1 over the concatenation of the SHA-1 of each `piece`-sized block."""
-    outer = hashlib.sha1()
+    outer = _sha1()
     with open(path, 'rb') as handle:
         while True:
             block = _read_block(handle, piece)
             if not block:
                 break
-            outer.update(hashlib.sha1(block).digest())
+            outer.update(_sha1(block).digest())
     return outer.hexdigest().upper()
 
 
 def verify_content(path, expected, piece_sizes=PIECE_SIZES):
     """Which block size reproduces the server's hash, or None when none of them do.
 
-    None with an `expected` value means the bytes on disk are not the bytes the
-    server hashed — which is exactly the silent corruption two writers on one
-    segment can leave behind, where the file is the right length and wrong inside."""
+    None is *not* proof of damage: it means the uploader used a block size this list
+    does not contain. The caller decides what that costs — see Pipeline.promote, which
+    keeps the bytes once no retries are left rather than deleting a file over a guess.
+    A damaged file is the case where the size that used to work now folds to
+    something else, and `piece_sizes` puts that remembered size first."""
     if not expected:
         return None
     wanted = expected.upper()
     for piece in piece_sizes:
-        if content_hash(path, piece) == wanted:
+        if piece and content_hash(path, piece) == wanted:
             return piece
     return None
 
@@ -102,7 +123,7 @@ def plan_segments(total, connections, seg_dir):
         path = os.path.join(seg_dir, f'{index:03d}')
         want = end - start + 1
         have = os.path.getsize(path) if os.path.exists(path) else 0
-        if have > want:                           # a stale segment is not usable
+        if have > want:              # same rule as wipe_overshot, applied across processes
             os.remove(path)
             have = 0
         plan.append({'index': index, 'path': path, 'start': start, 'end': end,
@@ -161,12 +182,20 @@ def build_command(item, url):
 def wipe_overshot(plan, log=None):
     """Throw away any segment that ended up longer than its own range.
 
+    This is the authoritative statement of the rule; `plan_segments` applies it to a
+    segment left over from another process, and `_segment_have` merely refuses to
+    count the tail.
+
     The extra bytes are the evidence of two writers appending the same file: the
-    second one started at an offset the first had already passed, so the middle of
-    the segment is a shifted copy and only its *prefix* is right. Truncating to the
-    range length therefore yields a file of the correct size with wrong bytes, which
-    is the one outcome worse than a stalled download — so the segment is refetched
-    whole, and `--max-filesize` plus `reap` waiting keep it from happening twice."""
+    second started at an offset the first had already passed, so the middle is a
+    shifted copy and only the *prefix* is right. Truncating to the range length then
+    yields a file of the correct size with wrong bytes — observed on a 399 MB file,
+    which was right up to byte 17,276,928 and wrong for the rest of its first
+    segment. Two guards keep the state from recurring: `reap` terminates *and waits*
+    for every curl before a new round opens the file, and `build_command` sends
+    `--max-filesize` for the exact remaining count so a CDN that ignored the Range
+    header cannot append a second copy. Refetching a whole segment is expensive;
+    silently wrong bytes are worse."""
     wiped = []
     for item in plan:
         if os.path.exists(item['path']) and os.path.getsize(item['path']) > item['want']:

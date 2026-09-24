@@ -298,6 +298,7 @@ class TestVerifyMode(RunLinkHarness):
         record.update({'state': 'done', 'local': path, 'size': len(content)})
         node = {'id': file_id, 'name': name, 'size': len(content), 'path': name,
                 'hash': digest, 'is_folder': False}
+        self.node = node
         job = self.job()
         self.pipeline.inventory = lambda ignored: {
             'title': 'Series', 'token': 'T', 'files': [node], 'total': len(content),
@@ -312,13 +313,49 @@ class TestVerifyMode(RunLinkHarness):
         self.assertEqual(self.pipeline.verify([job]), 0)
         self.assertEqual(self.pipeline.state.file('F1')['hash_piece'], 512 << 10)
 
-    def test_right_length_wrong_bytes_is_reported_and_kept_on_disk(self):
+    def test_right_length_wrong_bytes_is_quarantined_not_deleted(self):
         content = b'a' * 4096 + b'b' * 2048
         job = self.seed_done('F1', 'bad.mp4', content,
                              fold(b'a' * 4096 + b'c' * 2048, 1 << 20))
         self.assertEqual(self.pipeline.verify([job]), 1)
-        self.assertTrue(os.path.exists(os.path.join(self.lib, 'Series', 'bad.mp4')),
-                        'verify reports; it does not delete')
+        doomed = os.path.join(self.lib, 'Series', 'bad.mp4.unverified')
+        self.assertTrue(os.path.exists(doomed), 'the bytes survive as evidence')
+        self.assertFalse(os.path.exists(os.path.join(self.lib, 'Series', 'bad.mp4')))
+        record = self.pipeline.state.file('F1')
+        self.assertEqual(record['state'], 'pending', 'so the next download run replaces it')
+        self.assertIsNone(record['local'])
+
+    def test_a_quarantined_file_that_now_hashes_out_is_moved_back(self):
+        # the block-size candidate list will grow; a file parked because of a guess
+        # should come home on its own once the guess covers it
+        content = b'y' * 3000
+        doomed = os.path.join(self.lib, 'Series', 'fixed.mp4.unverified')
+        job = self.seed_done('F1', 'fixed.mp4', content, fold(content, 1 << 20), local=doomed)
+        with open(doomed, 'wb') as handle:
+            handle.write(content)
+        self.pipeline.state.file('F1')['state'] = 'unverified'
+        self.assertEqual(self.pipeline.verify([job]), 0)
+        self.assertTrue(os.path.exists(os.path.join(self.lib, 'Series', 'fixed.mp4')))
+        self.assertFalse(os.path.exists(doomed))
+        self.assertEqual(self.pipeline.state.file('F1')['state'], 'done')
+
+    def test_one_dead_share_does_not_stop_the_sweep(self):
+        content = b'x' * 5000
+        good = self.seed_done('F1', 'good.mp4', content, fold(content, 1 << 20))
+        dead = {'url': 'https://mypikpak.com/s/DEADDEADDEADDEAD0000', 'share_id': 'DEAD',
+                'pass_code': '', 'folder': 'Dead', 'order': 2}
+        node = self.node
+
+        def inventory(job):
+            if job['url'] == dead['url']:
+                from pikpakget.api import PikPakError
+                raise PikPakError('分享已失效', status=403)
+            return {'title': 'Series', 'token': 'T', 'files': [node], 'total': len(content),
+                    'folders': 0, 'truncated': False}
+        self.pipeline.inventory = inventory
+        self.assertEqual(self.pipeline.verify([dead, good]), 0)
+        self.assertEqual(self.pipeline.state.file('F1')['hash_piece'], 1 << 20,
+                         'the healthy link was still checked')
 
     def test_a_moved_file_is_not_called_corrupt(self):
         job = self.seed_done('F1', 'gone.mp4', b'x' * 10, fold(b'x' * 10, 1 << 20),
@@ -1390,6 +1427,46 @@ class TestSessionVersusOneBadLink(RunLinkHarness):
         self.assertEqual(self.pipeline.auth_hits, 0)
 
 
+    def test_the_last_attempt_keeps_the_bytes_and_marks_them_unverified(self):
+        # an unseen block size is not proof of damage, and 400 MB is not free to
+        # throw away on a guess: once the retries are spent the bytes stay
+        self.assertEqual(self.run_one(size=100, digest='0' * 40)[0], 'retry')
+        self.pipeline.state.file('SHAREFILE1')['attempts'] = self.module.MAX_ATTEMPTS
+        self.assertEqual(self.run_one(size=100, digest='0' * 40)[0], 'incomplete')
+        record = self.pipeline.state.file('SHAREFILE1')
+        self.assertEqual(record['state'], 'unverified')
+        self.assertTrue(record['local'].endswith('.unverified'))
+        self.assertTrue(os.path.exists(record['local']), 'the bytes were kept')
+
+    def test_a_quarantined_file_is_not_fetched_again_on_the_next_pass(self):
+        self.run_one(size=100, digest='0' * 40)
+        self.pipeline.state.file('SHAREFILE1')['attempts'] = self.module.MAX_ATTEMPTS
+        self.run_one(size=100, digest='0' * 40)
+        self.downloads.clear()
+        self.assertEqual(self.run_one(size=100, digest='0' * 40)[0], 'incomplete')
+        self.assertEqual(self.downloads, [], 'no re-litigating an unproven rule per pass')
+
+    def test_deleting_the_quarantine_asks_for_another_download(self):
+        self.run_one(size=100, digest='0' * 40)
+        record = self.pipeline.state.file('SHAREFILE1')
+        record['attempts'] = self.module.MAX_ATTEMPTS
+        self.run_one(size=100, digest='0' * 40)
+        os.remove(record['local'])
+        self.downloads.clear()
+        self.run_one(size=100, digest='0' * 40)
+        self.assertEqual(len(self.downloads), 1)
+
+    def test_a_remembered_block_size_is_tried_first(self):
+        self.pipeline.hash_hint = None
+        sizes = self.pipeline.hash_sizes({'hash_piece': 2 << 20})
+        self.assertEqual(sizes[0], 2 << 20)
+        self.assertEqual(len(sizes), len(self.module.PIECE_SIZES))
+        self.assertEqual(self.pipeline.hash_sizes(None)[0], self.module.PIECE_SIZES[0])
+        # the previous file's answer carries over to the next one in the same run
+        self.pipeline.hash_hint = 4 << 20
+        self.assertEqual(self.pipeline.hash_sizes(None)[0], 4 << 20)
+
+
 class TestRefreshFailureIsNotAlwaysFatal(unittest.TestCase):
     """A socket that never reached the server says nothing about the session."""
 
@@ -1417,6 +1494,32 @@ class TestRefreshFailureIsNotAlwaysFatal(unittest.TestCase):
         with self.assertRaises(PikPakError):
             self.client.refresh()
         self.assertTrue(self.client.session_dead)
+
+    def test_the_auth_endpoint_being_down_is_not_a_dead_session(self):
+        # 5xx is the server having a bad minute; treating it as a refusal would stop a
+        # multi-day run and send the user to re-login for nothing
+        from pikpakget.api import PikPakError
+        self.answer((503, {'error_description': 'temporarily unavailable'}))
+        with self.assertRaises(PikPakError):
+            self.client.refresh()
+        self.assertFalse(self.client.session_dead)
+
+
+class TestUnsupportedPlatform(unittest.TestCase):
+    """`import fcntl` at module scope made Windows fail with a traceback before it
+    could even print an explanation."""
+
+    def test_windows_refuses_with_advice_and_still_answers_version(self):
+        import contextlib
+        import io
+        import pikpakget.cli as cli
+        original = cli.fcntl
+        cli.fcntl = None
+        self.addCleanup(setattr, cli, 'fcntl', original)
+        with contextlib.redirect_stderr(io.StringIO()) as refused:
+            self.assertEqual(cli.main(['--whoami']), 2)
+        self.assertIn('WSL', refused.getvalue())
+        self.assertEqual(cli.main(['--version']), 0)
 
 
 class TestDocumentedCounts(unittest.TestCase):
