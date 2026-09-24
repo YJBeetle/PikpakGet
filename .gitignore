@@ -12,6 +12,7 @@ downloads/
 .segs*/
 
 # python
+dist/
 *.egg-info/
 __pycache__/
 *.py[cod]
