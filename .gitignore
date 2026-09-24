@@ -8,10 +8,11 @@ logs/
 inventory.csv
 downloads/
 *.part
-*.part.segs/
-.segs/
+*.part.segs*/
+.segs*/
 
 # python
+*.egg-info/
 __pycache__/
 *.py[cod]
 .venv/
