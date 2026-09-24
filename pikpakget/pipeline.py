@@ -465,7 +465,7 @@ class Pipeline:
                    and record.get('state') in ('downloaded', 'done')
                    for record in self.state.data['files'].values())
 
-    def fetch_to(self, file_id, node, dest_dir):
+    def fetch_to(self, file_id, node, dest_dir, record=None):
         """Stream the file to its final folder. Downloading straight into the
         destination (via `.part`) means an interrupted run never leaves a partial
         file that looks complete."""
@@ -520,13 +520,13 @@ class Pipeline:
             else:
                 if got != expected:
                     raise PikPakError(f'拼装后大小不符 {got}/{expected}')
-                return self.promote(part, final, node)
+                return self.promote(part, final, node, record)
         resume = os.path.getsize(part) if os.path.exists(part) else 0
         url = self.client.download_url(file_id)[0]
         written = download_stream(url, part, expected, resume, stop=self.stop)
         if expected and written != expected:
             raise PikPakError(f'下载不完整 {written}/{expected}')
-        return self.promote(part, final, node)
+        return self.promote(part, final, node, record)
 
     def verify(self, jobs):
         """Re-check every file state claims to have downloaded against the hash the
@@ -575,7 +575,7 @@ class Pipeline:
         return 1 if suspect else 0
 
 
-    def promote(self, part, final, node):
+    def promote(self, part, final, node, record=None):
         """Let the bytes become the real file only once the server's content hash
         reproduces. Size cannot tell a shifted segment from a good one: the wrong
         file plays perfectly up to the byte where it stopped being the right one.
@@ -589,7 +589,9 @@ class Pipeline:
             if piece is None:
                 os.remove(part)
                 raise PikPakError(f'内容 hash 与云端不符（{expected[:16]}…），已丢弃待重下')
-            self.log(f'内容 hash 已核对（{piece >> 10} KiB 分片）', 'debug')
+            self.log(f'内容 hash 已核对（{piece >> 10} KiB 分片）')
+            if record is not None:
+                record['hash_piece'] = piece        # --verify starts with this size
         os.replace(part, final)
         return final, 'downloaded'
 
@@ -686,7 +688,7 @@ class Pipeline:
                 self.state.save()
                 restored = self.reuse_or_restore(job, node, record, report['token'])
                 self.wait_ready(restored, node['size'])
-                local, how = self.fetch_to(restored, node, dest_dir)
+                local, how = self.fetch_to(restored, node, dest_dir, record)
                 record.update({'state': 'downloaded', 'local': local,
                                'seconds': round(time.time() - started, 1)})
                 self.state.save()

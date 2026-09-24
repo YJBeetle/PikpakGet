@@ -196,7 +196,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     115 tests on the pure logic; no account, no network
+tests/test_pure.py     116 tests on the pure logic; no account, no network
 ```
 
 ## Development

@@ -256,6 +256,11 @@ class TestContentVerificationOnPromote(RunLinkHarness):
         self.assertEqual(status, 'ok')
         self.assertTrue(os.path.exists(os.path.join(self.lib, 'Series', 'a.mp4')))
 
+    def test_a_downloaded_file_remembers_the_block_size_it_verified_at(self):
+        status, node = self.run_one(size=100, digest=fold(b'\0' * 100, 1 << 20))
+        self.assertEqual(status, 'ok')
+        self.assertEqual(self.pipeline.state.file('SHAREFILE1')['hash_piece'], 1 << 20)
+
     def test_a_wrong_file_is_dropped_and_never_marked_done(self):
         status, node = self.run_one(size=100, digest='0' * 40)
         self.assertEqual(status, 'retry')
@@ -1416,12 +1421,16 @@ class TestRefreshFailureIsNotAlwaysFatal(unittest.TestCase):
 
 class TestDocumentedCounts(unittest.TestCase):
     """Both READMEs quote the number of tests, and both went stale silently. Counting
-    the suite from inside it keeps the claim tied to the code."""
+    the suite from inside it keeps the claim tied to the code.
+
+    The count is deliberately *not* the current run's size: a loader inherited from
+    the command line reports 1 test when the suite is filtered with `-k`, which fails
+    the very assertion it exists to protect."""
 
     def test_both_readmes_quote_the_real_number_of_tests(self):
         import re
         here = os.path.dirname(os.path.abspath(__file__))
-        total = unittest.defaultTestLoader.discover(here, pattern='test_*.py').countTestCases()
+        total = unittest.TestLoader().discover(here, pattern='test_*.py').countTestCases()
         for name, pattern in (('README.md', r'(\d+) tests on the pure logic'),
                               ('README.cn.md', r'(\d+) 项纯逻辑测试')):
             with open(os.path.join(here, '..', name), encoding='utf-8') as handle:

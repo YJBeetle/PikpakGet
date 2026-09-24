@@ -173,7 +173,7 @@ pikpakget/api.py       HTTP 客户端：会话、验证码签名、分享/云盘
 pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
-tests/test_pure.py     115 项纯逻辑测试；不涉及账号、不联网
+tests/test_pure.py     116 项纯逻辑测试；不涉及账号、不联网
 ```
 
 ## 开发
