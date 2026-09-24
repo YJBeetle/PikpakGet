@@ -349,6 +349,15 @@ class Pipeline:
         self.used_names[(dest_dir, name)] = node['path']
         return os.path.join(dest_dir, name)
 
+    def _we_wrote(self, path):
+        """Whether state records this exact file as something we downloaded.
+
+        Only our own output may be replaced wholesale; a same-named file the user
+        placed in the library themselves is preserved (see fetch_to)."""
+        return any(record.get('local') == path
+                   and record.get('state') in ('downloaded', 'done')
+                   for record in self.state.data['files'].values())
+
     def fetch_to(self, file_id, node, dest_dir):
         """Stream the file to its final folder. Downloading straight into the
         destination (via `.part`) means an interrupted run never leaves a partial
@@ -363,8 +372,16 @@ class Pipeline:
             if expected and local == expected:
                 self.log(f'已存在且大小一致，跳过 {node["name"][:40]} ({human(local)})')
                 return final, 'existing'
-            self.log(f'已存在但大小不符（{human(local)} != {human(expected)}），重下', 'warn')
-            os.remove(final)
+            if not self._we_wrote(final):
+                # anything else sitting in the library belongs to the user: a share
+                # reusing that filename is not licence to delete it
+                clash = f'{final}.conflict-{time.strftime("%Y%m%d-%H%M%S")}'
+                os.rename(final, clash)
+                self.log(f'目标同名文件不是本工具下的，改名让路 '
+                         f'{os.path.basename(clash)[:40]}', 'warn')
+            else:
+                self.log(f'已存在但大小不符（{human(local)} != {human(expected)}），重下', 'warn')
+                os.remove(final)
         seg_dir = f'{part}.segs{self.args.connections}'
         # a half-finished single-stream .part keeps its progress: resume it as-is
         # instead of restarting the file over segments

@@ -137,6 +137,63 @@ class TestSegments(unittest.TestCase):
         self.assertEqual(sum(item['want'] for item in plan), 2)
 
 
+class TestForeignFileIsNeverDeleted(unittest.TestCase):
+    """A share reusing a filename the user already has is not a licence to delete
+    the user's copy. This was data loss with a single warn line in the log."""
+
+    def setUp(self):
+        import argparse
+        from pikpakget.pipeline import Log, Pipeline
+        self.dir = tempfile.mkdtemp()
+        self.lib = os.path.join(self.dir, 'lib', 'Series')
+        os.makedirs(self.lib)
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'), dest=self.lib,
+                                  max_files=0, connections=1, gap=0, repeat=0)
+        self.pipeline = Pipeline(args, Log(quiet=True))
+        import pikpakget.pipeline as pipeline
+        self.addCleanup(setattr, pipeline, 'download_stream', pipeline.download_stream)
+        self.pipeline.client.download_url = lambda fid: ('http://host/url', {})
+
+        def fake_stream(url, target, expected=0, resume=0, *rest, **kwargs):
+            with open(target, 'wb') as handle:
+                handle.truncate(expected)
+            return expected
+        pipeline.download_stream = fake_stream
+        self.pipeline.client.file = lambda fid: {'phase': 'PHASE_TYPE_COMPLETE', 'size': 10}
+
+    def grab(self, name='movie.mp4', size=10):
+        node = {'name': name, 'size': size, 'path': name, 'local': None}
+        return self.pipeline.fetch_to('FID', node, self.lib)
+
+    def write_existing(self, name, content):
+        path = os.path.join(self.lib, name)
+        with open(path, 'wb') as handle:
+            handle.write(content)
+        return path
+
+    def test_foreign_same_name_is_renamed_not_removed(self):
+        before = self.write_existing('movie.mp4', b'precious family video')
+        final, how = self.grab()
+        self.assertEqual(final, before)                   # same path, now our content
+        self.assertEqual(os.path.getsize(before), 10)
+        clashes = [name for name in os.listdir(self.lib) if '.conflict-' in name]
+        self.assertEqual(len(clashes), 1, '用户的文件应改名保留')
+        with open(os.path.join(self.lib, clashes[0]), 'rb') as handle:
+            self.assertEqual(handle.read(), b'precious family video')
+        self.assertEqual(how, 'downloaded')
+        self.assertTrue(os.path.isfile(final))
+
+    def test_our_own_stale_copy_is_replaced_quietly(self):
+        path = os.path.join(self.lib, 'movie.mp4')
+        self.write_existing('movie.mp4', b'half-written by us earlier')
+        self.pipeline.state.file('OTHER')['local'] = path
+        self.pipeline.state.file('OTHER')['state'] = 'done'
+        self.pipeline.state.file('OTHER')['size'] = 3
+        self.grab()
+        self.assertEqual([name for name in os.listdir(self.lib) if '.conflict-' in name], [])
+        self.assertEqual(os.path.getsize(path), 10)
+
+
 class TestNameCollisions(unittest.TestCase):
     """Remote names come from someone else's folders, so collisions are the norm
     and a silent overwrite would be data loss."""
