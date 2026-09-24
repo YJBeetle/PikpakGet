@@ -31,9 +31,14 @@ STATE_VERSION = 1
 
 
 def human(nbytes):
+    """Binary units, labelled as such.
+
+    PikPak's own quota is 6442450944 bytes, i.e. exactly 6 GiB, so reporting the
+    same number as "6 GB" understates it by 7% and makes two tools' figures refuse
+    to reconcile."""
     value, unit = float(nbytes), 'B'
-    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
-        if value < 1024 or unit == 'TB':
+    for unit in ('B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'):
+        if abs(value) < 1024 or unit == 'PiB':
             return f'{value:.1f}{unit}'
         value /= 1024
 

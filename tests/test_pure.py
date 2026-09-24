@@ -264,6 +264,47 @@ class TestSegmentRequest(unittest.TestCase):
         self.assertTrue(proc.waited)
 
 
+class TestSegmentIdentity(unittest.TestCase):
+    """Resuming a segment assumes those bytes are the prefix of the same content.
+    A replaced upstream file breaks that assumption, so the stale prefix must go."""
+
+    def setUp(self):
+        import pikpakget.stream as stream
+        self.stream = stream
+        self.dir = tempfile.mkdtemp()
+
+    def write_segment(self, name, size):
+        with open(os.path.join(self.dir, name), 'wb') as handle:
+            handle.truncate(size)
+
+    def plan(self, total):
+        return self.stream.plan_segments(total, 2, self.dir)
+
+    def test_same_size_resume_keeps_partial_bytes(self):
+        self.plan(1000)
+        self.write_segment('000', 120)
+        plan = self.plan(1000)
+        self.assertEqual(self.stream._segment_have(plan[0]), 120)
+
+    def test_replaced_file_discards_the_stale_prefix(self):
+        self.plan(1000)
+        self.write_segment('000', 120)
+        self.plan(2000)                                   # same id, new size upstream
+        plan = self.plan(2000)
+        self.assertEqual(self.stream._segment_have(plan[0]), 0)
+
+    def test_the_wipe_happens_once_not_every_round(self):
+        self.plan(1000)
+        self.write_segment('000', 120)
+        self.plan(2000)
+        self.plan(2000)
+        self.plan(2000)
+        plan = self.plan(2000)
+        self.assertEqual(self.stream._segment_have(plan[0]), 0)
+        self.write_segment('000', 500)                    # fresh partial progress
+        self.assertEqual(self.stream._segment_have(self.plan(2000)[0]), 500)
+
+
 class TestQuotaWait(unittest.TestCase):
     """After deleting a cloud copy the tool waits for the quota to fall. An
     unrelated parked copy must not turn that into a 150 s stall on every file."""
@@ -683,13 +724,22 @@ class TestState(unittest.TestCase):
 
 
 class TestHuman(unittest.TestCase):
-    def test_units(self):
+    def test_binary_units_are_labelled_binary(self):
         self.assertEqual(human(0), '0.0B')
-        self.assertEqual(human(1024), '1.0KB')
-        self.assertEqual(human(5 * 1024 ** 3), '5.0GB')
+        self.assertEqual(human(1024), '1.0KiB')
+        self.assertEqual(human(5 * 1024 ** 3), '5.0GiB')
 
     def test_terabytes(self):
-        self.assertTrue(human(40 * 1024 ** 4).endswith('TB'))
+        self.assertTrue(human(40 * 1024 ** 4).endswith('TiB'))
+
+    def test_the_quota_reads_as_six_gib(self):
+        # 6442450944 bytes is exactly 6 GiB; labelling it "6 GB" made two tools'
+        # figures disagree by 7%
+        self.assertEqual(human(6442450944), '6.0GiB')
+
+    def test_no_decimal_labels_leak(self):
+        for size in (1024, 1024 ** 2, 1024 ** 3, 1024 ** 4):
+            self.assertFalse(human(size).endswith(('KB', 'MB', 'GB', 'TB')))
 
 
 if __name__ == '__main__':

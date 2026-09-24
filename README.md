@@ -5,8 +5,8 @@ English | [中文](README.cn.md)
 Sequentially grab PikPak share links with a small cloud quota. Pure standard
 library, no browser, no GUI automation, no official desktop client required.
 
-The problem this solves: PikPak free accounts have **6 GB** of cloud space, and a
-shared folder is routinely 100–40 000 GB. You cannot "save everything then download"
+The problem this solves: PikPak free accounts have **6 GiB** of cloud space (6 442 450 944 bytes),
+and a shared folder is routinely hundreds of GB to tens of TB. You cannot "save everything then download"
 — so this tool works one *file* at a time:
 
 ```
@@ -95,14 +95,14 @@ Measured on a free account, and worth knowing before you plan a large run:
 - **A share can only be restored in pieces.** Restoring a folder id copies its
   whole subtree and fails when it does not fit, so files are restored one id at a
   time and the listing is walked first (listing is free and instant).
-- **Files larger than the quota cannot be fetched at all.** A 7.6 GB file on a 6 GB
-  drive has no path through this tool: it is marked `too_big`, skipped, and reported
+- **Files larger than the quota cannot be fetched at all.** A 7.1 GiB file does not
+  fit a 6 GiB drive has no path through this tool: it is marked `too_big`, skipped, and reported
   in `--inventory` as `unfetchable` rather than attempted and left half-restored.
 - **Offline task slots are limited** (`quota.cloud_download`, 3 on free). Sequential
   single-file work stays well under it.
 - **Throughput is shaped per account, not per connection.** A single connection
-  measured 0.13–0.7 MB/s over the course of a long run (it drifts down with time of
-  day). Four ranged segments measured ~0.25 MB/s in aggregate, with two of the four
+  measured 0.13–0.7 MiB/s over the course of a long run (it drifts down with time of
+  day). Four ranged segments measured ~0.25 MiB/s in aggregate, with two of the four
   receiving *nothing* — so segmentation is worth ~1.5× at best and extra lanes are
   routinely starved. The default is 4 because that still beat one stream in these
   measurements, but `--connections 1` is the right answer if you would rather be
@@ -115,7 +115,8 @@ single connection and stays there; a **starved** lane (2xx, no bytes) is just
 unlucky bandwidth shaping, so segments are retried with back-off instead of being
 abandoned file after file.
 
-Budget accordingly: 400 GB at 0.13–0.6 MB/s is roughly one to four weeks of
+Budget accordingly: the 405 GiB one author's main folder holds costs roughly one to
+four weeks of
 continuous running.
 
 ## Being a good citizen (avoiding risk control)
@@ -216,7 +217,7 @@ Stated plainly, because each one has bitten someone at some point:
   counted as `unfetchable` in `--inventory`.
 - **Long-run stability is unproven.** Multi-day runs are the design target and the
   resume path is journalled, but the first real multi-day run is happening right now.
-- **Speed figures here are one evening's observations** and drift by time of day;
+- **Speed figures here are one evening's observations in binary units (MiB/s)** and drift by time of day;
   treat them as orders of magnitude, not capacity.
 - **Not published to PyPI**; install from the repository (`pip install -e .`).
 

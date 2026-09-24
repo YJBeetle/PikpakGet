@@ -44,6 +44,7 @@ def plan_segments(total, connections, seg_dir):
     if connections < 1:
         raise ValueError('connections must be >= 1')
     os.makedirs(seg_dir, exist_ok=True)
+    _check_segment_size(seg_dir, total)
     edges = [total * i // connections for i in range(connections)] + [total]
     plan = []
     for index in range(connections):
@@ -59,6 +60,25 @@ def plan_segments(total, connections, seg_dir):
         plan.append({'index': index, 'path': path, 'start': start, 'end': end,
                      'want': want, 'have': have})
     return plan
+
+
+def _check_segment_size(seg_dir, total):
+    """Wipe a segment directory that was built for a different file size.
+
+    A resume assumes the bytes on disk are the prefix of the same content. If the
+    sharer replaced the file behind the same id, that assumption is false and the
+    old prefix would splice into the new file as corruption, so start clean."""
+    marker = os.path.join(seg_dir, '.total')
+    recorded = None
+    if os.path.exists(marker):
+        with open(marker, encoding='utf-8') as handle:
+            recorded = handle.read().strip()
+    if recorded is not None and recorded != str(total):
+        for name in os.listdir(seg_dir):
+            os.remove(os.path.join(seg_dir, name))
+    # always record the current size, otherwise a wipe would repeat forever
+    with open(marker, 'w', encoding='utf-8') as handle:
+        handle.write(str(total))
 
 
 def _segment_have(item):
