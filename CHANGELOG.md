@@ -3,6 +3,27 @@
 This project aims to follow Keep a Changelog and SemVer. Below 1.0.0 the command
 line and module APIs may change between releases.
 
+## 0.1.3
+
+### Added
+- **Downloads are now verified by content hash, not just by byte count.** PikPak's
+  `hash` field was reverse engineered from real files: it is the SHA-1 of the
+  concatenated SHA-1s of each fixed-size block, the block size being whatever the
+  uploader's client used (1 MiB on most files here, 512 KiB on another). Every file is
+  folded and compared before its `.part` is renamed into place, and a file that no
+  candidate block size reproduces is deleted and re-fetched.
+- `--verify` re-checks every file the state records as downloaded against the hash the
+  share still reports. It deletes nothing and exits 1 when something is off.
+
+### Fixed
+- **A segment written past its own range was truncated and trusted, which is how a
+  file lands with the right size and a shifted middle.** Two writers on one segment
+  leave a duplicated stretch followed by content that is short by exactly the
+  overlap — so the total comes out correct and every length check passes. Such a
+  segment is now discarded and refetched whole. Found by auditing an already
+  downloaded library: one 399 MB file matched the server's bytes in 7 of 9 sampled
+  windows and not in the other two, all inside one segment.
+
 ## 0.1.2
 
 ### Fixed

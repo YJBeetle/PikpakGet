@@ -66,6 +66,10 @@ def build_parser():
                         help='size up each link (file count, bytes, largest file) without '
                              'using any cloud space')
     parser.add_argument('--inventory-out', default='inventory.csv')
+    parser.add_argument('--verify', dest='verify_only', action='store_true',
+                        help='re-check every file already marked downloaded against the '
+                             'content hash the share reports; deletes nothing, exits 1 on '
+                             'a mismatch')
     parser.add_argument('--dry-run', action='store_true', help='plan only; no writes, no deletes')
     parser.add_argument('--no-delete', action='store_true',
                         help='keep the cloud copies after downloading (fills the quota fast)')
@@ -145,6 +149,8 @@ def main(argv=None):
         log('链接文件里没有可用链接', 'error')
         return 2
     _install_stop_handler()
+    if args.verify_only:
+        return pipeline.verify(jobs)
     if args.dry_run:
         log('dry-run：不会转存、下载或删除')
     try:

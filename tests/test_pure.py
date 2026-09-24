@@ -1,5 +1,6 @@
 """Tests for the pure logic. Synthetic data only — no live account, no real links."""
 import collections
+import hashlib
 import json
 import os
 import tempfile
@@ -180,16 +181,148 @@ class RunLinkHarness(unittest.TestCase):
             handle.truncate(expected)
         return expected
 
-    def run_one(self, name='a.mp4', size=100, path=None):
+    def run_one(self, name='a.mp4', size=100, path=None, digest=None):
         self.module.download_stream = self.fake_stream
         node = {'id': 'SHAREFILE1', 'name': name, 'size': size,
-                'path': path or name, 'hash': None, 'is_folder': False}
+                'path': path or name, 'hash': digest, 'is_folder': False}
         self.pipeline.inventory = lambda job: {
             'title': 'Series', 'token': 'TOKEN', 'files': [node],
             'total': size, 'folders': 0, 'truncated': False}
         job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111', 'share_id':
                'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'Series', 'order': 1}
         return self.pipeline.run_link(job), node
+
+
+def fold(content, piece):
+    """PikPak's hash rule, written out here so a passing implementation cannot be
+    the same mistake twice over: sha1 over the concatenated sha1 of each block."""
+    outer = hashlib.sha1()
+    for offset in range(0, len(content), piece):
+        outer.update(hashlib.sha1(content[offset:offset + piece]).digest())
+    return outer.hexdigest().upper()
+
+
+class TestContentHash(unittest.TestCase):
+    """Reverse engineered from real files: the block size is whatever the uploader's
+    client used — 1 MiB on most, 512 KiB on one."""
+
+    def setUp(self):
+        import pikpakget.stream as stream
+        self.stream = stream
+        self.dir = tempfile.mkdtemp()
+
+    def write(self, name, content):
+        path = os.path.join(self.dir, name)
+        with open(path, 'wb') as handle:
+            handle.write(content)
+        return path
+
+    def test_a_file_shorter_than_one_block(self):
+        content = b'hello pikpak' * 7
+        self.assertEqual(self.stream.content_hash(self.write('small.bin', content), 1 << 20),
+                         fold(content, 1 << 20))
+
+    def test_whole_blocks_plus_a_partial_tail(self):
+        content = bytes(range(256)) * 20000            # 5 MB + 192 KB tail
+        path = self.write('mid.bin', content)
+        for piece in (1 << 20, 512 << 10, 4 << 20):
+            self.assertEqual(self.stream.content_hash(path, piece), fold(content, piece))
+
+    def test_verify_reports_the_block_size_that_reproduces_the_server(self):
+        content = os.urandom(1 << 20) + b'x' * 1000
+        path = self.write('fold.bin', content)
+        self.assertEqual(self.stream.verify_content(path, fold(content, 512 << 10)), 512 << 10)
+        self.assertEqual(self.stream.verify_content(path, fold(content, 1 << 20)), 1 << 20)
+
+    def test_a_shifted_middle_with_the_right_length_does_not_verify(self):
+        content = b'a' * (1 << 20) + b'b' * 8192
+        good = fold(content, 1 << 20)
+        damaged = content[:4096] + content[4096 + 1024:] + content[-1024:]
+        self.assertEqual(len(damaged), len(content), 'the byte count check stays green')
+        self.assertIsNone(self.stream.verify_content(self.write('bad.bin', damaged), good))
+
+    def test_nothing_to_check_is_not_a_failure(self):
+        path = self.write('any.bin', b'bytes')
+        self.assertIsNone(self.stream.verify_content(path, None))
+        self.assertIsNone(self.stream.verify_content(path, ''))
+
+
+class TestContentVerificationOnPromote(RunLinkHarness):
+    """The last line of defense: a file can be exactly the right length and wrong
+    inside, and only the server's hash can tell."""
+
+    def test_a_file_that_reproduces_the_server_hash_is_kept(self):
+        status, node = self.run_one(size=100, digest=fold(b'\0' * 100, 1 << 20))
+        self.assertEqual(status, 'ok')
+        self.assertTrue(os.path.exists(os.path.join(self.lib, 'Series', 'a.mp4')))
+
+    def test_a_wrong_file_is_dropped_and_never_marked_done(self):
+        status, node = self.run_one(size=100, digest='0' * 40)
+        self.assertEqual(status, 'retry')
+        final = os.path.join(self.lib, 'Series', 'a.mp4')
+        self.assertFalse(os.path.exists(final))
+        self.assertFalse(os.path.exists(final + '.part'), 'a retry must not resume bad bytes')
+        record = self.pipeline.state.file('SHAREFILE1')
+        self.assertEqual(record['state'], 'retry')
+        self.assertIn('内容 hash', record['error'])
+
+    def test_a_file_without_a_server_hash_still_lands(self):
+        status, node = self.run_one(size=100)
+        self.assertEqual(status, 'ok')
+        self.assertTrue(os.path.exists(os.path.join(self.lib, 'Series', 'a.mp4')))
+
+
+class TestVerifyMode(RunLinkHarness):
+    """`--verify` re-checks the library with the hash the share still reports. It has
+    to tell "corrupt" apart from "the user moved this file out" — the second one is
+    the normal life of a library."""
+
+    def job(self):
+        url = 'https://mypikpak.com/s/EXAMPLEID1111111111'
+        return {'url': url, 'share_id': 'EXAMPLEID1111111111', 'pass_code': '',
+                'folder': 'Series', 'order': 1, 'key': url + '\tSeries'}
+
+    def seed_done(self, file_id, name, content, digest, local=None):
+        folder = os.path.join(self.lib, 'Series')
+        os.makedirs(folder, exist_ok=True)
+        path = local or os.path.join(folder, name)
+        if local is None:
+            with open(path, 'wb') as handle:
+                handle.write(content)
+        record = self.pipeline.state.file(file_id, self.job()['key'])
+        record.update({'state': 'done', 'local': path, 'size': len(content)})
+        node = {'id': file_id, 'name': name, 'size': len(content), 'path': name,
+                'hash': digest, 'is_folder': False}
+        job = self.job()
+        self.pipeline.inventory = lambda ignored: {
+            'title': 'Series', 'token': 'T', 'files': [node], 'total': len(content),
+            'folders': 0, 'truncated': False}
+        return job
+
+    def test_a_library_that_hashes_out_passes_and_remembers_the_block_size(self):
+        # 600000 bytes: long enough that the 1 MiB and 512 KiB folds differ, so a
+        # reported block size means the candidate loop really walked the list
+        content = b'pikpak' * 100000
+        job = self.seed_done('F1', 'good.mp4', content, fold(content, 512 << 10))
+        self.assertEqual(self.pipeline.verify([job]), 0)
+        self.assertEqual(self.pipeline.state.file('F1')['hash_piece'], 512 << 10)
+
+    def test_right_length_wrong_bytes_is_reported_and_kept_on_disk(self):
+        content = b'a' * 4096 + b'b' * 2048
+        job = self.seed_done('F1', 'bad.mp4', content,
+                             fold(b'a' * 4096 + b'c' * 2048, 1 << 20))
+        self.assertEqual(self.pipeline.verify([job]), 1)
+        self.assertTrue(os.path.exists(os.path.join(self.lib, 'Series', 'bad.mp4')),
+                        'verify reports; it does not delete')
+
+    def test_a_moved_file_is_not_called_corrupt(self):
+        job = self.seed_done('F1', 'gone.mp4', b'x' * 10, fold(b'x' * 10, 1 << 20),
+                             local=os.path.join(self.lib, 'Series', 'moved-away.mp4'))
+        self.assertEqual(self.pipeline.verify([job]), 0)
+
+    def test_a_share_that_gives_no_hash_cannot_be_checked(self):
+        job = self.seed_done('F1', 'nohash.mp4', b'y' * 10, None)
+        self.assertEqual(self.pipeline.verify([job]), 0)
 
 
 class TestTruncationIsVisible(RunLinkHarness):
@@ -571,39 +704,22 @@ class TestSegmentRequest(unittest.TestCase):
             handle.truncate(1000)
         self.assertIsNone(self.stream._spawn(self.item, 'http://invalid.invalid/url'))
 
-    def test_trailing_overshoot_is_reported_not_discarded(self):
-        # Discarding an overshot segment threw away good progress and made the run
-        # oscillate; the extra tail is now simply never read.
+    def test_a_segment_longer_than_its_range_is_unusable(self):
+        # two writers on one file leave a shifted middle: the head is right, and the
+        # length can still come out right, so keeping the prefix yields a file that
+        # is complete, the correct size and wrong inside
         with open(self.item['path'], 'wb') as handle:
             handle.truncate(1500)
-        self.assertEqual(self.stream.overshot([self.item]), [0])
-        self.assertTrue(os.path.exists(self.item['path']))
-        self.assertEqual(self.stream._segment_have(self.item), 1000)
+        self.assertEqual(self.stream.wipe_overshot([self.item]), [0])
+        self.assertFalse(os.path.exists(self.item['path']))
+        self.assertEqual(self.stream._segment_have(self.item), 0)
 
-    def test_exact_segment_is_complete(self):
+    def test_exact_segment_is_kept(self):
         with open(self.item['path'], 'wb') as handle:
             handle.truncate(1000)
-        self.assertEqual(self.stream.overshot([self.item]), [])
+        self.assertEqual(self.stream.wipe_overshot([self.item]), [])
+        self.assertTrue(os.path.exists(self.item['path']))
         self.assertEqual(self.stream._segment_have(self.item), 1000)
-
-    def test_splice_never_reads_past_the_segment_length(self):
-        with open(self.item['path'], 'wb') as handle:
-            handle.write(b'a' * 1000 + b'X' * 500)   # junk tail from a race
-        other = os.path.join(self.dir, 'second.bin')
-        target = os.path.join(self.dir, 'out.bin')
-        stream = self.stream
-        plan = [self.item]
-        with open(target, 'wb') as out:
-            remaining = self.item['want']
-            with open(self.item['path'], 'rb') as handle:
-                while remaining > 0:
-                    block = handle.read(min(64, remaining))
-                    if not block:
-                        break
-                    out.write(block)
-                    remaining -= len(block)
-        self.assertEqual(os.path.getsize(target), 1000)
-        del other, stream, plan
 
     def test_reap_waits_for_children_so_the_next_round_cannot_share_the_file(self):
         class Proc:
@@ -808,15 +924,15 @@ class TestSegmentResume(unittest.TestCase):
         item = self.item(0, 0, 499, have=500)
         self.assertEqual(self.stream.segment_request(item)['remaining'], 0)
 
-    def test_overshoot_is_reported_and_ignored_not_discarded(self):
-        # Deleting an overshot segment threw away good bytes and made the run
-        # oscillate between discarding and refetching; the tail is now simply never
-        # read, since the head of the segment is valid.
+    def test_a_segment_written_past_its_range_is_refetched_whole(self):
+        # the byte-count check cannot see this damage, and trusting the prefix is how
+        # a 400 MB file ended up right in the head, shifted in the middle, and short
+        # by exactly the overlap at the end
         good = self.item(0, 0, 499, have=500)
         bad = self.item(1, 500, 999, have=560)
-        self.assertEqual(self.stream.overshot([good, bad]), [1])
-        self.assertTrue(os.path.exists(bad['path']))
-        self.assertEqual(self.stream._segment_have(bad), 500)
+        self.assertEqual(self.stream.wipe_overshot([good, bad]), [1])
+        self.assertFalse(os.path.exists(bad['path']))
+        self.assertTrue(os.path.exists(good['path']))
         self.assertEqual(self.stream._segment_have(good), 500)
 
     def test_range_is_capped_so_a_ignoring_cannot_double_the_file(self):

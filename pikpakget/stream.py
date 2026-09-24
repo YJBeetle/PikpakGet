@@ -12,6 +12,7 @@ back off and lower concurrency, a starved lane means segmentation is pointless h
 and a single stream will be faster.
 """
 import glob as _glob
+import hashlib
 import os
 import shutil
 import subprocess
@@ -25,6 +26,53 @@ STALL_LIMIT = 2048                 # bytes/s
 STALL_SECONDS = 90                 # ... sustained, after which curl gives up
 SEGMENT_RETRY_WAITS = (60, 300, 900)
 PROBE_BYTES = 1
+
+# PikPak's `hash` is not the SHA-1 of the file: it is the SHA-1 of the concatenated
+# SHA-1s of each fixed-size block, the size being whatever the uploader's client used.
+# Observed on real files: 1 MiB (most) and 512 KiB. Tried in this order, so a good
+# file normally costs one pass.
+PIECE_SIZES = (1 << 20, 512 << 10, 2 << 20, 4 << 20, 8 << 20, 16 << 20, 32 << 20,
+               256 << 10, 128 << 10, 64 << 10)
+
+
+def _read_block(handle, size):
+    """`read` may come back short, and a Merkle fold needs exact block boundaries."""
+    chunks = []
+    want = size
+    while want:
+        part = handle.read(want)
+        if not part:
+            break
+        chunks.append(part)
+        want -= len(part)
+    return b''.join(chunks)
+
+
+def content_hash(path, piece):
+    """SHA-1 over the concatenation of the SHA-1 of each `piece`-sized block."""
+    outer = hashlib.sha1()
+    with open(path, 'rb') as handle:
+        while True:
+            block = _read_block(handle, piece)
+            if not block:
+                break
+            outer.update(hashlib.sha1(block).digest())
+    return outer.hexdigest().upper()
+
+
+def verify_content(path, expected, piece_sizes=PIECE_SIZES):
+    """Which block size reproduces the server's hash, or None when none of them do.
+
+    None with an `expected` value means the bytes on disk are not the bytes the
+    server hashed — which is exactly the silent corruption two writers on one
+    segment can leave behind, where the file is the right length and wrong inside."""
+    if not expected:
+        return None
+    wanted = expected.upper()
+    for piece in piece_sizes:
+        if content_hash(path, piece) == wanted:
+            return piece
+    return None
 
 
 class SegmentRefused(PikPakError):
@@ -82,9 +130,9 @@ def _check_segment_size(seg_dir, total):
 
 
 def _segment_have(item):
-    """Bytes that are *usable* for this segment. A curl that was still winding down
-    when the next round started can append past the range, so anything beyond the
-    segment's own length is ignored rather than trusted or thrown away."""
+    """Bytes usable for this segment *as an accounting figure*. A segment longer than
+    its own range is corrupt and gets wiped by `wipe_overshot`; the cap here only
+    keeps the round's progress arithmetic honest until that runs."""
     if not os.path.exists(item['path']):
         return 0
     return min(os.path.getsize(item['path']), item['want'])
@@ -110,11 +158,24 @@ def build_command(item, url):
             '-r', request['range'], '-o', '-', '-A', 'Mozilla/5.0', url]
 
 
-def overshot(plan):
-    """Segments carrying trailing bytes past their range. Harmless (they are never
-    read), but worth reporting because it means two writers hit the same file."""
-    return [item['index'] for item in plan
-            if os.path.exists(item['path']) and os.path.getsize(item['path']) > item['want']]
+def wipe_overshot(plan, log=None):
+    """Throw away any segment that ended up longer than its own range.
+
+    The extra bytes are the evidence of two writers appending the same file: the
+    second one started at an offset the first had already passed, so the middle of
+    the segment is a shifted copy and only its *prefix* is right. Truncating to the
+    range length therefore yields a file of the correct size with wrong bytes, which
+    is the one outcome worse than a stalled download — so the segment is refetched
+    whole, and `--max-filesize` plus `reap` waiting keep it from happening twice."""
+    wiped = []
+    for item in plan:
+        if os.path.exists(item['path']) and os.path.getsize(item['path']) > item['want']:
+            os.remove(item['path'])
+            item['have'] = 0
+            wiped.append(item['index'])
+    if wiped and log:
+        log(f'段 {wiped} 写得比自身范围还长（两个写入者），整段丢弃重下', 'warn')
+    return wiped
 
 
 def reap(processes):
@@ -243,9 +304,7 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
             raise
         finally:
             reap([process for _, process in running])
-        overshot_indices = overshot(plan)
-        if overshot_indices and log:
-            log(f'段 {overshot_indices} 尾部有越界字节，拼接时将忽略', 'warn')
+        wipe_overshot(plan, log)
         gained = sum(_segment_have(item) for item in plan)
         last_progress = gained > before
         if gained <= before:

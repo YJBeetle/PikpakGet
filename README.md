@@ -10,7 +10,7 @@ and a shared folder is routinely hundreds of GB to tens of TB. You cannot "save 
 — so this tool works one *file* at a time:
 
 ```
-restore one file into your drive  →  download it  →  verify the byte size
+restore one file into your drive  →  download it  →  download it  →  verify its content hash
       →  permanently delete the cloud copy  →  wait for the quota to drop  →  next
 ```
 
@@ -78,6 +78,7 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | `--repeat N` | `0` (one pass) | re-pass the list to finish links that failed transiently; stops when a whole pass lands nothing |
 | `--limit N` / `--max-files N` | `0` (off) | stop after N links / N files |
 | `--inventory` | off | size up every link (count, bytes, largest file), no downloads |
+| `--verify` | off | re-check every already-downloaded file against the server's content hash; deletes nothing, exits 1 on a mismatch |
 | `--dry-run` | off | no restores, no writes, no deletes |
 | `--no-delete` | off | keep cloud copies after downloading (fills the quota fast) |
 | `--purge-trash` | off | allow emptying the whole trash if the quota is the blocker |
@@ -169,12 +170,13 @@ device id, and is gitignored as a whole.
 
 ## Verification
 
-Downloaded files are verified by **byte count** against the drive listing. This is
-a real limitation worth stating: PikPak's `hash` field is *not* the file's SHA-1
-(measured: a downloaded file's SHA-1 and the reported `hash` differ), so there is no
-upstream checksum to compare against. Integrity therefore rests on TLS plus the
-exact size check, and `.part` files are renamed into place only after the full byte
-count arrives.
+Every file is checked against PikPak's own content hash before its `.part` is
+renamed into place. That `hash` is *not* the file's SHA-1 — it is the SHA-1 of the
+concatenated SHA-1s of each fixed-size block, and the block size is whatever the
+uploader's client used (1 MiB on most files seen here, 512 KiB on another), so
+`stream.verify_content` tries a short list of sizes. A file that no size reproduces
+is deleted and re-fetched, because a byte count cannot see the damage two writers on
+one segment leave behind: a file of exactly the right length with a shifted middle.
 
 ## Security notes
 
@@ -191,10 +193,10 @@ count arrives.
 
 ```
 pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash endpoints
-pikpakget/stream.py    single resumable stream + ranged concurrent segments
-pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory
+pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
+pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     104 tests on the pure logic; no account, no network
+tests/test_pure.py     115 tests on the pure logic; no account, no network
 ```
 
 ## Development
@@ -210,9 +212,12 @@ ids. Please keep it that way if you add cases.
 
 Stated plainly, because each one has bitten someone at some point:
 
-- **Integrity is byte count only.** PikPak exposes no trustworthy checksum for a
-  downloaded file (see Verification), so a bit-flip that preserves length would go
-  unnoticed. TLS covers transit; nothing covers a bad server-side copy.
+- **The hash rule is reverse engineered, not documented.** Verification trusts an
+  inferred reading of PikPak's `hash` (SHA-1 over per-block SHA-1s, block size taken
+  from a candidate list). A file whose hash no candidate reproduces is re-downloaded
+  up to three attempts and then reported as failed — the conservative direction, but
+  it spends bandwidth when a server-side hash is simply stale. TLS still covers
+  transit; nothing covers a bad server-side copy that hashes to itself.
 - **macOS is the only platform this has been run on.** Linux is expected to work
   (`fcntl`, `curl`, POSIX paths) but is untested; Windows is not supported.
 - **The refusal path is untested in the wild.** Dropping to one connection after an

@@ -19,7 +19,8 @@ import sys
 import time
 
 from .api import PikPakError, Client, parse_share_url
-from .stream import SegmentRefused, download_segments, download_stream
+from .stream import (PIECE_SIZES, SegmentRefused, download_segments, download_stream,
+                     verify_content)
 
 SPACE_HEADROOM = 400_000_000          # keep this much cloud space free
 LOCAL_HEADROOM = 20_000_000_000       # ... and this much on the target volume
@@ -519,13 +520,76 @@ class Pipeline:
             else:
                 if got != expected:
                     raise PikPakError(f'拼装后大小不符 {got}/{expected}')
-                os.replace(part, final)
-                return final, 'downloaded'
+                return self.promote(part, final, node)
         resume = os.path.getsize(part) if os.path.exists(part) else 0
         url = self.client.download_url(file_id)[0]
         written = download_stream(url, part, expected, resume, stop=self.stop)
         if expected and written != expected:
             raise PikPakError(f'下载不完整 {written}/{expected}')
+        return self.promote(part, final, node)
+
+    def verify(self, jobs):
+        """Re-check every file state claims to have downloaded against the hash the
+        share still reports.
+
+        Read-only apart from the state file, and it deletes nothing: a mismatch is a
+        report, and re-running the same download command is the fix (a `done` record
+        that this flags has to be reset by hand, which is deliberate — losing the
+        record is worse than losing the bandwidth)."""
+        checked, suspect, absent, unknown = 0, [], [], 0
+        for job in jobs:
+            try:
+                report = self.inventory(job)
+            except PikPakError as error:
+                self.log(f'{job["folder"]}: 读不到清单，无法校验: {error}', 'error')
+                return 1
+            for node in report['files']:
+                record = self.state.data['files'].get(node['id'])
+                if not record or record.get('state') != 'done':
+                    continue
+                local = record.get('local')
+                if not local or not os.path.exists(local):
+                    absent.append(node['name'])
+                    continue
+                if not node['hash']:
+                    unknown += 1
+                    continue
+                if size_on_disk(local) != node['size']:
+                    suspect.append((node['name'], f"大小 {size_on_disk(local)} != {node['size']}"))
+                    continue
+                cached = record.get('hash_piece')
+                sizes = (cached, *PIECE_SIZES) if cached else PIECE_SIZES
+                piece = verify_content(local, node['hash'], sizes)
+                if piece is None:
+                    suspect.append((node['name'], f"内容 hash 不符 {node['hash'][:12]}…"))
+                else:
+                    record['hash_piece'] = piece
+                    checked += 1
+        self.state.save()
+        self.log(f'校验完成：{checked} 个文件内容 hash 相符，{len(suspect)} 个可疑，'
+                 f'{len(absent)} 个不在原位，{unknown} 个云端没给 hash')
+        for name, why in suspect:
+            self.log(f'  需重下：{why}  {name[:60]}', 'error')
+        for name in absent:
+            self.log(f'  本地没有：{name[:60]}', 'warn')
+        return 1 if suspect else 0
+
+
+    def promote(self, part, final, node):
+        """Let the bytes become the real file only once the server's content hash
+        reproduces. Size cannot tell a shifted segment from a good one: the wrong
+        file plays perfectly up to the byte where it stopped being the right one.
+
+        A hash that no block size reproduces is treated as damage, not as "cannot
+        check" — the file is dropped and retried, and after MAX_ATTEMPTS it is
+        reported instead of being kept."""
+        expected = (node or {}).get('hash')
+        if expected:
+            piece = verify_content(part, expected)
+            if piece is None:
+                os.remove(part)
+                raise PikPakError(f'内容 hash 与云端不符（{expected[:16]}…），已丢弃待重下')
+            self.log(f'内容 hash 已核对（{piece >> 10} KiB 分片）', 'debug')
         os.replace(part, final)
         return final, 'downloaded'
 
