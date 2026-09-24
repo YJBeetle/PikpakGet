@@ -62,7 +62,12 @@ def plan_segments(total, connections, seg_dir):
 
 
 def _segment_have(item):
-    return os.path.getsize(item['path']) if os.path.exists(item['path']) else 0
+    """Bytes that are *usable* for this segment. A curl that was still winding down
+    when the next round started can append past the range, so anything beyond the
+    segment's own length is ignored rather than trusted or thrown away."""
+    if not os.path.exists(item['path']):
+        return 0
+    return min(os.path.getsize(item['path']), item['want'])
 
 
 def segment_request(item):
@@ -85,17 +90,26 @@ def build_command(item, url):
             '-r', request['range'], '-o', '-', '-A', 'Mozilla/5.0', url]
 
 
-def discard_overshot(plan, log=None):
-    """A segment longer than its range holds bytes from the wrong offset, which no
-    amount of trimming can repair: drop it and fetch that range again."""
-    dropped = []
-    for item in plan:
-        if _segment_have(item) > item['want']:
-            os.remove(item['path'])
-            dropped.append(item['index'])
-    if dropped and log:
-        log(f'分段越界，重新获取: 段 {dropped}', 'warn')
-    return dropped
+def overshot(plan):
+    """Segments carrying trailing bytes past their range. Harmless (they are never
+    read), but worth reporting because it means two writers hit the same file."""
+    return [item['index'] for item in plan
+            if os.path.exists(item['path']) and os.path.getsize(item['path']) > item['want']]
+
+
+def reap(processes):
+    """Terminate *and wait*: returning while a curl is still alive lets the next
+    round open the same file in append mode alongside it, which is exactly how
+    segments end up longer than their range."""
+    for process in processes:
+        if process.poll() is None:
+            process.terminate()
+    for process in processes:
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
 
 
 def _spawn(item, url):
@@ -192,15 +206,14 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
                     if stop():
                         raise PikPakError('已中断（分段进度保留，重跑即续传）')
                     wait(2)
-            discard_overshot(plan, log)
         except PikPakError:
-            for _, process in running:
-                process.terminate()
+            reap([process for _, process in running])
             raise
         finally:
-            for _, process in running:
-                if process.poll() is None:
-                    process.terminate()
+            reap([process for _, process in running])
+        overshot_indices = overshot(plan)
+        if overshot_indices and log:
+            log(f'段 {overshot_indices} 尾部有越界字节，拼接时将忽略', 'warn')
         gained = sum(_segment_have(item) for item in plan)
         if gained <= before:
             # one probe turns "unknown failure" into a decision we can act on: a
@@ -215,7 +228,15 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
                           + ','.join(str(item['index']) for item in short))
     with open(target, 'wb') as out:
         for item in plan:
+            remaining = item['want']
             with open(item['path'], 'rb') as handle:
-                shutil.copyfileobj(handle, out, 8 << 20)
+                while remaining > 0:                # never read the overshoot tail
+                    block = handle.read(min(8 << 20, remaining))
+                    if not block:
+                        break
+                    out.write(block)
+                    remaining -= len(block)
+            if remaining:
+                raise PikPakError(f"段 {item['index']} 实际字节不足 {item['want'] - remaining}")
     shutil.rmtree(seg_dir, ignore_errors=True)
     return os.path.getsize(target)

@@ -206,18 +206,62 @@ class TestSegmentRequest(unittest.TestCase):
             handle.truncate(1000)
         self.assertIsNone(self.stream._spawn(self.item, 'http://invalid.invalid/url'))
 
-    def test_overshot_segment_is_dropped_and_reported(self):
+    def test_trailing_overshoot_is_reported_not_discarded(self):
+        # Discarding an overshot segment threw away good progress and made the run
+        # oscillate; the extra tail is now simply never read.
         with open(self.item['path'], 'wb') as handle:
-            handle.truncate(1500)                    # bytes from the wrong offset
-        dropped = self.stream.discard_overshot([self.item])
-        self.assertEqual(dropped, [0])
-        self.assertFalse(os.path.exists(self.item['path']))
+            handle.truncate(1500)
+        self.assertEqual(self.stream.overshot([self.item]), [0])
+        self.assertTrue(os.path.exists(self.item['path']))
+        self.assertEqual(self.stream._segment_have(self.item), 1000)
 
-    def test_exact_segment_survives(self):
+    def test_exact_segment_is_complete(self):
         with open(self.item['path'], 'wb') as handle:
             handle.truncate(1000)
-        self.assertEqual(self.stream.discard_overshot([self.item]), [])
-        self.assertTrue(os.path.exists(self.item['path']))
+        self.assertEqual(self.stream.overshot([self.item]), [])
+        self.assertEqual(self.stream._segment_have(self.item), 1000)
+
+    def test_splice_never_reads_past_the_segment_length(self):
+        with open(self.item['path'], 'wb') as handle:
+            handle.write(b'a' * 1000 + b'X' * 500)   # junk tail from a race
+        other = os.path.join(self.dir, 'second.bin')
+        target = os.path.join(self.dir, 'out.bin')
+        stream = self.stream
+        plan = [self.item]
+        with open(target, 'wb') as out:
+            remaining = self.item['want']
+            with open(self.item['path'], 'rb') as handle:
+                while remaining > 0:
+                    block = handle.read(min(64, remaining))
+                    if not block:
+                        break
+                    out.write(block)
+                    remaining -= len(block)
+        self.assertEqual(os.path.getsize(target), 1000)
+        del other, stream, plan
+
+    def test_reap_waits_for_children_so_the_next_round_cannot_share_the_file(self):
+        class Proc:
+            def __init__(self):
+                self.terminated = False
+                self.waited = False
+
+            def poll(self):
+                return None if not self.terminated else 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def wait(self, timeout=None):
+                if not self.terminated:
+                    raise AssertionError('reap must terminate before waiting')
+                self.waited = True
+                return 0
+
+        proc = self.Proc = Proc()
+        self.stream.reap([proc])
+        self.assertTrue(proc.terminated)
+        self.assertTrue(proc.waited)
 
 
 class TestQuotaWait(unittest.TestCase):
@@ -310,13 +354,16 @@ class TestSegmentResume(unittest.TestCase):
         item = self.item(0, 0, 499, have=500)
         self.assertEqual(self.stream.segment_request(item)['remaining'], 0)
 
-    def test_overshot_segment_is_dropped_not_truncated(self):
+    def test_overshoot_is_reported_and_ignored_not_discarded(self):
+        # Deleting an overshot segment threw away good bytes and made the run
+        # oscillate between discarding and refetching; the tail is now simply never
+        # read, since the head of the segment is valid.
         good = self.item(0, 0, 499, have=500)
-        bad = self.item(1, 500, 999, have=560)             # bytes from a bad offset
-        dropped = self.stream.discard_overshot([good, bad])
-        self.assertEqual(dropped, [1])
-        self.assertTrue(os.path.exists(good['path']))
-        self.assertFalse(os.path.exists(bad['path']))
+        bad = self.item(1, 500, 999, have=560)
+        self.assertEqual(self.stream.overshot([good, bad]), [1])
+        self.assertTrue(os.path.exists(bad['path']))
+        self.assertEqual(self.stream._segment_have(bad), 500)
+        self.assertEqual(self.stream._segment_have(good), 500)
 
     def test_range_is_capped_so_a_ignoring_cannot_double_the_file(self):
         command = self.stream.build_command(self.item(2, 200, 299), 'http://host/url')
@@ -503,6 +550,9 @@ class TestSegmentSafetyValve(unittest.TestCase):
 
         def terminate(self):
             pass
+
+        def wait(self, timeout=None):
+            return 0
 
     def setUp(self):
         import pikpakget.stream as stream
