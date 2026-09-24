@@ -183,6 +183,52 @@ class RunLinkHarness(unittest.TestCase):
         return self.pipeline.run_link(job), node
 
 
+class TestLinkIdentity(unittest.TestCase):
+    """A link is identified by URL *and* folder, and leftovers from earlier lists
+    must not make a clean run look unfinished."""
+
+    def write(self, text):
+        handle = tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False, encoding='utf-8')
+        handle.write(text)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        return handle.name
+
+    def test_same_share_into_two_folders_yields_two_jobs(self):
+        from pikpakget.pipeline import read_links
+        url = 'https://mypikpak.com/s/EXAMPLEID1111111111'
+        jobs, problems = read_links(self.write(f'{url}\tSeriesA\n{url}\tSeriesB\n'))
+        self.assertEqual(problems, [])
+        self.assertEqual([job['folder'] for job in jobs], ['SeriesA', 'SeriesB'])
+        self.assertNotEqual(jobs[0]['key'], jobs[1]['key'])
+
+    def test_a_stale_link_from_an_earlier_list_does_not_extend_the_run(self):
+        import argparse
+        from pikpakget.pipeline import Log, Pipeline
+        dirpath = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=os.path.join(dirpath, '.state'), dest=dirpath,
+                                  max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
+                                  inventory_only=False, limit=0, purge_trash=False,
+                                  no_delete=True, no_sweep=True)
+        pipeline = Pipeline(args, Log(quiet=True))
+        pipeline.space = lambda: {'limit': 6_000_000_000, 'usage': 0, 'in_trash': 0,
+                                  'free': 6_000_000_000}
+        pipeline.state.link('https://mypikpak.com/s/DROPPEDID1111111\tOldList')['status'] = 'error'
+        passes = []
+
+        def finish(job):
+            passes.append(job['key'])
+            pipeline.state.link(job['key'])['status'] = 'done'
+            return 'ok'
+        pipeline.run_link = finish
+        jobs = [{'url': 'https://mypikpak.com/s/EXAMPLEID1111111111', 'share_id':
+                 'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'Series', 'order': 1}]
+        jobs[0]['key'] = jobs[0]['url'] + '\t' + jobs[0]['folder']
+        self.assertEqual(pipeline.run(jobs), 0)
+        self.assertEqual(passes, [jobs[0]['key']],
+                         'one pass is enough when this run finished its own list')
+
+
 class TestFailureClassification(unittest.TestCase):
     """Three failures that look alike must not get one answer: a rate limit wants an
     hour, an expired session wants --login, a signed link that 404s wants neither."""

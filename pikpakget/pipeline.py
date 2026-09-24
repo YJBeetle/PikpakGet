@@ -30,6 +30,12 @@ THROTTLE_STOP = 3                     # consecutive refusals before giving up
 STATE_VERSION = 1
 
 
+def job_key(job):
+    """A link is identified by URL *and* destination folder, so the same share can
+    be filed into two folders in one list without the second being skipped."""
+    return f"{job['url']}\t{job.get('folder', '')}"
+
+
 def human(nbytes):
     """Binary units, labelled as such.
 
@@ -120,9 +126,11 @@ def read_links(path, folder_map=None, default_folder='(unfiled)'):
                 problems.append(f'{path}:{number}: {error}')
                 continue
             folder = override or folder_map.get(share_id) or default_folder
-            jobs.append({'url': line.split('?')[0].rstrip('/'), 'share_id': share_id,
-                         'pass_code': pass_code, 'folder': safe_name(folder),
-                         'order': len(jobs) + 1})
+            job = {'url': line.split('?')[0].rstrip('/'), 'share_id': share_id,
+                   'pass_code': pass_code, 'folder': safe_name(folder),
+                   'order': len(jobs) + 1}
+            job['key'] = job_key(job)
+            jobs.append(job)
     return jobs, problems
 
 
@@ -459,8 +467,10 @@ class Pipeline:
 
     # --------------------------------------------------------------------- drive
     def run_link(self, job):
-        link = self.state.link(job['url'])
+        key = job.get('key') or job_key(job)
+        link = self.state.link(key)
         link['order'] = job['order']
+        link.setdefault('folder', job['folder'])
         if link['status'] == 'done':
             self.log(f'跳过已完成: {job["folder"]} {job["share_id"][-8:]}')
             return 'done'
@@ -487,7 +497,7 @@ class Pipeline:
                 link['status'] = 'partial'
                 self.state.save()
                 return 'stopped'
-            record = self.state.file(node['id'], job['url'])
+            record = self.state.file(node['id'], key)
             record.update({'name': node['name'], 'size': node['size'], 'path': node['path'],
                            'local': record.get('local') or self.dest_path(node, dest_dir)})
             if record['state'] == 'done' and record.get('local') and os.path.exists(record['local']):
@@ -557,7 +567,7 @@ class Pipeline:
                 if record['state'] == 'failed':
                     continue
                 return 'retry'
-        pending = [rec for rec in self.state.files_of(job['url'])
+        pending = [rec for rec in self.state.files_of(key)
                    if rec['state'] not in ('done', 'too_big')]
         link['status'] = 'done' if not pending else 'incomplete'
         link['pending_files'] = len(pending)
@@ -609,8 +619,10 @@ class Pipeline:
                     break
             self.log(f'第 {pass_number} 轮结束：{dict(tally)} | '
                      f'云盘占用 {human(self.space()["usage"])}')
-            unfinished = [url for url, info in self.state.data['links'].items()
-                          if info.get('status') != 'done']
+            # only this run's list: leftovers from earlier link files, or links the
+            # user has since dropped, must not force another pass and a non-zero exit
+            unfinished = [job.get('key') or job_key(job) for job in jobs
+                          if self.state.link(job.get('key') or job_key(job))['status'] != 'done']
             if not unfinished:
                 return 0
             if self.files_done == before_done and self.bytes_done == before_bytes:
