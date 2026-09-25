@@ -104,6 +104,25 @@ class TestAccounts(unittest.TestCase):
 
 
 class TestCloudWorkspace(unittest.TestCase):
+    def test_root_requests_use_the_api_root_identifier(self):
+        client = Client.__new__(Client)
+        calls = []
+
+        def call(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            return {'file': {'id': 'workspace'}}
+
+        client.call = call
+        client._paginate = lambda path, params: calls.append(('GET', path, params)) or iter(())
+        client.list_folder('*')
+        client.create_folder('.pikpakget')
+        client.list_folder('workspace')
+        client.create_folder('child', 'workspace')
+        self.assertNotIn('parent_id', calls[0][2])
+        self.assertEqual(calls[1][2]['json_body']['parent_id'], '')
+        self.assertEqual(calls[2][2]['parent_id'], 'workspace')
+        self.assertEqual(calls[3][2]['json_body']['parent_id'], 'workspace')
+
     def setUp(self):
         self.client = Client.__new__(Client)
         self.deleted = []

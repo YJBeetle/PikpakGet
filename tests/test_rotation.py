@@ -12,7 +12,8 @@ class TestAccountRotation(unittest.TestCase):
     def test_status_needs_no_account_or_account_lock(self):
         root = tempfile.mkdtemp()
         dest = os.path.join(root, 'lib')
-        args = cli.build_parser().parse_args(['--status', '--dest', dest])
+        args = cli.build_parser().parse_args([os.path.join(root, 'links.txt'),
+                                              '--dest', dest, '--status'])
         with mock.patch.dict(os.environ, {'PIKPAKGET_HOME': root}):
             cli.resolve_dirs(args)
         with mock.patch.object(cli, 'Accounts', side_effect=AssertionError('accounts loaded')), \

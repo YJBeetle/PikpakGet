@@ -436,13 +436,17 @@ class Client:
         return {'limit': int(quota.get('limit') or 0), 'usage': int(quota.get('usage') or 0)}
 
     def list_folder(self, parent_id='*', trashed=False):
-        return list(self._paginate('/v1/files', {
-            'parent_id': parent_id, 'limit': 200, 'order': 3,
-            'filters': json.dumps({'trashed': {'eq': bool(trashed)}}), 'with_audit': 'true'}))
+        params = {'limit': 200, 'order': 3,
+                  'filters': json.dumps({'trashed': {'eq': bool(trashed)}}),
+                  'with_audit': 'true'}
+        if parent_id not in ('*', ''):
+            params['parent_id'] = parent_id
+        return list(self._paginate('/v1/files', params))
 
     def create_folder(self, name, parent_id='*'):
         return self.call('POST', '/v1/files', json_body={
-            'kind': 'drive#folder', 'name': name, 'parent_id': parent_id})
+            'kind': 'drive#folder', 'name': name,
+            'parent_id': '' if parent_id == '*' else parent_id})
 
     def prepare_workspace(self, name=DOT_DIR_NAME):
         """Own one dedicated cloud folder and clear it before a download run.
