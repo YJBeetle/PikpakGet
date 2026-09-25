@@ -5,6 +5,12 @@ line and module APIs may change between releases.
 
 ## Unreleased
 
+### Changed
+- **A bare `--login` asks for the account instead of dumping usage.** It is the first
+  thing people type, and argparse answered a question about the account with an English
+  usage block. A scripted call with no terminal gets one line and exit 2; the password
+  prompt is now Chinese like the rest of the output.
+
 ### Fixed
 - **`--status` with no records printed a bare table header**, which reads as broken
   output — and it was most likely to happen to someone whose `--state-dir` pointed at a

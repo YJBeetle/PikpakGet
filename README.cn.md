@@ -37,7 +37,7 @@ pip install -e . && pikpakget --help  # 或者装成一个命令行工具
 
 ```bash
 # 1. 登录一次；会话（可自动续期）保存在 ~/.pikpakget/session.json，权限 600
-python3 -m pikpakget --login you@example.com
+python3 -m pikpakget --login you@example.com     # 省略用户名则会在终端里问你要
 
 # 2. 可选：先看清这批链接有多大，这一步完全不占云盘空间
 python3 -m pikpakget links.txt --inventory --inventory-out inventory.csv
@@ -200,7 +200,7 @@ pikpakget/api.py       HTTP 客户端：会话、验证码签名、分享/云盘
 pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
-tests/test_pure.py     156 项纯逻辑测试；不涉及账号、不联网
+tests/test_pure.py     159 项纯逻辑测试；不涉及账号、不联网
 tests/test_transfer.py   5 项真下载测试：本地 HTTP + 真 curl
 ```
 

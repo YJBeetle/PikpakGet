@@ -91,7 +91,7 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | `--folder-map FILE` | none | `url,folder` mapping for lines without a folder column |
 | `--default-folder NAME` | `(unfiled)` | folder for lines that carry no name |
 | `--inventory-out FILE` | `inventory.csv` | where `--inventory` writes |
-| `--login USERNAME` / `--password-stdin` | — | sign in once; read the password from stdin instead of a prompt |
+| `--login [USERNAME]` / `--password-stdin` | — | sign in once; a bare `--login` asks for the account in a terminal, and `--password-stdin` reads the password from stdin instead of a prompt |
 | `--yes` | off | skip unparsable lines in the links file instead of refusing to start |
 | `--quiet` | off | hide info chatter, warnings still shown |
 
@@ -233,7 +233,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     156 on the pure logic; no account, no network
+tests/test_pure.py     159 on the pure logic; no account, no network
 tests/test_transfer.py   5 real transfers over local HTTP, with real curl
 ```
 
