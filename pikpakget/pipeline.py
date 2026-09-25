@@ -32,13 +32,17 @@ QUARANTINE_SUFFIX = '.unverified'     # bytes we keep but cannot vouch for
 THROTTLE_STOP = 3                     # consecutive refusals before giving up
 AUTH_STOP = 3                         # ... and consecutive 401/403s before blaming the session
 
-STATE_VERSION = 2
+STATE_VERSION = 3
 
 
 def job_key(job):
     """A link is identified by URL *and* destination folder, so the same share can
     be filed into two folders in one list without the second being skipped."""
     return f"{job['url']}\t{job.get('folder', '')}"
+
+
+def file_key(link_key, file_id):
+    return f'{link_key}\t{file_id}'
 
 
 def human(nbytes):
@@ -223,8 +227,15 @@ class State:
         return self.data['links'].setdefault(url, {'status': 'pending', 'attempts': 0})
 
     def file(self, file_id, url=None):
-        return self.data['files'].setdefault(file_id, {
+        key = file_key(url, file_id) if url is not None else file_id
+        if url is None and key not in self.data['files']:
+            matches = [rec for rec in self.data['files'].values()
+                       if rec.get('source_id') == file_id]
+            if len(matches) == 1:
+                return matches[0]
+        return self.data['files'].setdefault(key, {
             'state': 'pending', 'attempts': 0, 'url': url, 'restored_id': None,
+            'source_id': file_id,
             'local': None, 'home': None, 'quarantined': None,
             'size': 0, 'seconds': None, 'error': None})
 
@@ -258,7 +269,8 @@ class State:
 
 
 class Pipeline:
-    def __init__(self, args, log, stop=lambda: False):
+    def __init__(self, args, log, stop=lambda: False, client=None,
+                 account_id=None, workspace_id=None):
         self.args = args
         self.log = log
         self.stop = stop
@@ -266,17 +278,26 @@ class Pipeline:
         # something has to be written, and a read-only report must not fail because a
         # library path turned out to be unbuildable
         #
-        # the login belongs to the account and stays in home; a run that points --dest at
-        # a second library moves only its journal. Callers that construct Pipeline
-        # directly (tests, library use) keep the credential beside the journal
+        # The CLI supplies the selected account's client. Direct callers receive an
+        # in-memory, unauthenticated client and cannot accidentally use an old login.
         self.account_dir = getattr(args, 'account_dir', None) or account_dir()
-        self.client = Client(session_path=os.path.join(self.account_dir, 'session.json'),
-                             device_id_path=os.path.join(self.account_dir, 'device_id'),
-                             logger=log)
+        self.client = client or Client(
+            session_path=None,
+            device_id_path=os.path.join(self.account_dir, 'device_id'), logger=log)
+        self.account_id = account_id
+        self.workspace_id = workspace_id
+        self.traffic_capped = False
         self.state = State(os.path.join(args.state_dir, 'state.json'))
+        if account_id and workspace_id:
+            # prepare_workspace emptied this account's staging folder before we got
+            # here; its old cloud ids cannot be resumed or cleaned again.
+            for rec in self.state.data['files'].values():
+                if rec.get('account_id') == account_id:
+                    rec['restored_id'] = None
         self.created = set()          # drive ids we made: the only ones we may delete
         for rec in self.state.data['files'].values():
-            if rec.get('restored_id') and rec.get('state') not in ('done', 'too_big'):
+            if (rec.get('restored_id') and rec.get('state') not in ('done', 'too_big')
+                    and (not account_id or rec.get('account_id') == account_id)):
                 self.created.add(rec['restored_id'])
         self.quota_limit = 0
         # (folder, filename) -> source path inside the share, so two files that
@@ -317,30 +338,6 @@ class Pipeline:
         self.log(f'云端空间未在 {timeout}s 内回落，当前占用 {human(space["usage"])}', 'warn')
         return space
 
-    def sweep_leftovers(self):
-        """At startup nothing is in flight, so this is the only safe moment to drop
-        the cloud copies an earlier interrupted run left behind: they would
-        otherwise occupy quota and make every later space check stall. Only ids that
-        our own state recorded are touched."""
-        tracked = {rec['restored_id']: key for key, rec in self.state.data['files'].items()
-                   if rec.get('restored_id') and rec['state'] not in ('done', 'too_big')}
-        if not tracked:
-            return
-        victims = [item for item in self.client.list_folder('*')
-                   if item.get('kind') == 'drive#file' and item.get('id') in tracked]
-        if not victims:
-            return
-        size = sum(int(item.get('size') or 0) for item in victims)
-        self.log(f'回收上次中断留下的 {len(victims)} 个云端副本（{human(size)}），'
-                 '本地已完成的文件不受影响', 'info')
-        before = self.space()['usage']          # the reclaim baseline, not the size
-        self.client.cleanup([item['id'] for item in victims])
-        for item in victims:
-            self.state.data['files'][tracked[item['id']]]['restored_id'] = None
-            self.created.discard(item['id'])
-        self.state.save()
-        self.wait_space_freed(size, before)
-
     def note_throttle(self, error):
         """Decide whether to stop the run, with advice that matches the cause.
 
@@ -353,9 +350,8 @@ class Pipeline:
                      '后重跑同一命令（进度已保存）', 'error')
             return True
         if isinstance(error, TrafficCapped):
-            # the counter is daily, so the wait is measured in hours, not seconds
-            self.log('今日下行流量已用满，停止本轮：请至少 1 小时后重跑同一命令'
-                     '（这个额度按天计，跨过零点必然可用；进度已保存）', 'error')
+            self.traffic_capped = True
+            self.log('该账号今日下行流量已用满，停止使用此账号；进度已保存', 'error')
             return True
         if getattr(error, 'throttled', False) or status in (429, 503):
             self.throttle_hits += 1
@@ -393,6 +389,9 @@ class Pipeline:
         """Reuse an interrupted run's cloud copy only if it is provably the right
         file; otherwise drop it and restore again."""
         restored = record.get('restored_id')
+        if self.account_id and record.get('account_id') != self.account_id:
+            restored = None
+            record['restored_id'] = None
         if restored:
             try:
                 info = self.client.file(restored)
@@ -412,22 +411,27 @@ class Pipeline:
         """Restore one file id. The reply's `file_id` is not the copy that was just
         made, so the new file is identified by diffing the listing and matching
         its size."""
-        snapshot = {item['id'] for item in self.client.list_folder('*')}
-        made = self.client.restore(job['share_id'], token, [node['id']], '*')
+        parent_id = self.workspace_id or '*'
+        snapshot = {item['id'] for item in self.client.list_folder(parent_id)}
+        made = self.client.restore(job['share_id'], token, [node['id']], parent_id)
         record['restore_task_id'] = made.get('restore_task_id')
         status = str(made.get('restore_status') or '')
         if 'FAIL' in status.upper() or 'ERROR' in status.upper():
             raise PikPakError(f'转存被拒: {status} {json.dumps(made, ensure_ascii=False)[:200]}')
         deadline = time.time() + POLL_TIMEOUT
         while True:
-            fresh = [item for item in self.client.list_folder('*')
+            fresh = [item for item in self.client.list_folder(parent_id)
                      if item['id'] not in snapshot and item.get('kind') == 'drive#file'
                      and not item.get('trashed')
-                     and (not node['size'] or int(item.get('size') or 0) == node['size'])]
+                     and (not node['size'] or int(item.get('size') or 0) == node['size'])
+                     and item.get('name') == node['name']]
+            if len(fresh) > 1:
+                raise PikPakError('转存后出现多个同名同大小的新文件，无法确认副本归属')
             if fresh:
                 restored = fresh[0]['id']
                 self.created.add(restored)
                 record['restored_id'] = restored
+                record['account_id'] = self.account_id
                 self.state.save()
                 return restored
             if time.time() > deadline:
@@ -494,15 +498,6 @@ class Pipeline:
                 self._case_folded = False      # cannot tell: assume the strict case
         return self._case_folded
 
-    def _we_wrote(self, path):
-        """Whether state records this exact file as something we downloaded.
-
-        Only our own output may be replaced wholesale; a same-named file the user
-        placed in the library themselves is preserved (see fetch_to)."""
-        return any(record.get('local') == path
-                   and record.get('state') in ('downloaded', 'done')
-                   for record in self.state.data['files'].values())
-
     def fetch_to(self, file_id, node, dest_dir, record=None):
         """Stream the file to its final folder. Downloading straight into the
         destination (via `.part`) means an interrupted run never leaves a partial
@@ -515,9 +510,13 @@ class Pipeline:
         if os.path.isfile(final):
             local = os.path.getsize(final)
             if expected and local == expected:
-                self.log(f'已存在且大小一致，跳过 {node["name"][:40]} ({human(local)})')
-                return final, 'existing'
-            if not self._we_wrote(final):
+                if node.get('hash') and verify_content(final, node['hash'],
+                                                       self.hash_sizes(record)):
+                    self.log(f'已存在且内容 hash 一致，跳过 {node["name"][:40]}')
+                    return final, 'existing'
+            owned = (record is not None and record.get('local') == final
+                     and record.get('state') in ('downloaded', 'done'))
+            if not owned:
                 # anything else sitting in the library belongs to the user: a share
                 # reusing that filename is not licence to delete it
                 clash = f'{final}.conflict-{time.strftime("%Y%m%d-%H%M%S")}'
@@ -585,7 +584,8 @@ class Pipeline:
                 self.log(f'{job["folder"]}: 读不到清单，这个链接暂时没法复核: {error}', 'warn')
                 continue
             for node in report['files']:
-                record = self.state.data['files'].get(node['id'])
+                record = self.state.data['files'].get(file_key(job.get('key') or job_key(job),
+                                                               node['id']))
                 if not record or record.get('state') not in ('done', 'unverified'):
                     continue
                 local = record.get('local')
@@ -699,9 +699,8 @@ class Pipeline:
         link = self.state.link(key)
         link['order'] = job['order']
         link.setdefault('folder', job['folder'])
-        if link['status'] == 'done':
-            self.log(f'跳过已完成: {job["folder"]} {job["share_id"][-8:]}')
-            return 'done'
+        # A share can gain files after a previous run. Re-list even completed links;
+        # the per-file journal below skips files whose local copies are intact.
         try:
             report = self.inventory(job)
         except PikPakError as error:
@@ -734,9 +733,28 @@ class Pipeline:
                 self.state.save()
                 return 'stopped'
             record = self.state.file(node['id'], key)
+            previous_hash = record.get('source_hash')
+            changed_source = bool(previous_hash and node.get('hash')
+                                  and previous_hash != node['hash'])
+            changed_account_without_hash = bool(
+                self.account_id and record.get('account_id')
+                and record['account_id'] != self.account_id and not node.get('hash'))
+            if changed_source or changed_account_without_hash:
+                # Range-resuming bytes from an unidentified source can produce a
+                # right-sized splice of two different files.
+                home = record.get('home') or record.get('local')
+                if home:
+                    partial = home + '.part'
+                    if os.path.isfile(partial):
+                        os.remove(partial)
+                    for segments in _glob.glob(partial + '.segs*'):
+                        if os.path.isdir(segments):
+                            shutil.rmtree(segments)
+                record['state'] = 'pending'
+            record['source_hash'] = node.get('hash')
             record.update({'name': node['name'], 'size': node['size'], 'path': node['path'],
                            'local': record.get('local') or self.dest_path(node, dest_dir)})
-            if record['state'] == 'done' and record.get('local') and os.path.exists(record['local']):
+            if record['state'] == 'done' and size_on_disk(record.get('local')) == node['size']:
                 continue
             if record['state'] == 'unverified':
                 if size_on_disk(record.get('local')):
@@ -834,9 +852,9 @@ class Pipeline:
         # decided from the ids this listing produced, not from the url field on the
         # records: a key format change must never be able to hide unfinished work
         pending = [node_id for node_id in (item['id'] for item in files)
-                   if self.state.data['files'].get(node_id, {}).get('state')
+                   if self.state.data['files'].get(file_key(key, node_id), {}).get('state')
                    not in ('done', 'too_big')]
-        link['status'] = 'done' if not pending else 'incomplete'
+        link['status'] = 'done' if not pending and not report['truncated'] else 'incomplete'
         link['pending_files'] = len(pending)
         self.state.save()
         if pending:
@@ -856,6 +874,15 @@ class Pipeline:
         return True
 
     def run(self, jobs):
+        if self.args.dry_run:
+            for job in jobs[:self.args.limit or len(jobs)]:
+                report = self.inventory(job)
+                self.log(f'{job["folder"]}: 计划 {len(report["files"])} 个文件 / '
+                         f'{human(report["total"])}')
+            return 0
+        if self.args.inventory_only:
+            self.quota_limit = self.space()['limit']
+            return self.report(jobs)
         try:
             os.makedirs(self.args.dest, exist_ok=True)
         except OSError as error:
@@ -864,11 +891,8 @@ class Pipeline:
         if not os.access(self.args.dest, os.W_OK):
             self.log(f'目标目录不可写: {self.args.dest}', 'error')
             return 2
-        if not self.args.dry_run:
-            self.state.reset_transient_failures()
-            self.state.save()
-        if not self.args.no_sweep:
-            self.sweep_leftovers()
+        self.state.reset_transient_failures()
+        self.state.save()
         space = self.space()
         self.quota_limit = space['limit']
         self.log(f'{len(jobs)} 个链接 -> {self.args.dest} | 云盘 '
@@ -876,12 +900,10 @@ class Pipeline:
                  f'（回收站 {human(space["in_trash"])}）| '
                  f'本地可用 {human(shutil.disk_usage(self.args.dest).free)} | '
                  f'并发 {self.args.connections} 段')
-        if self.args.inventory_only:
-            return self.report(jobs)
         if self.args.limit:
             jobs = jobs[:self.args.limit]
         for pass_number in itertools.count(1):
-            if self.args.repeat and pass_number > self.args.repeat:
+            if pass_number > (self.args.repeat or 1):
                 break
             tally, before_done, before_bytes = collections.Counter(), self.files_done, self.bytes_done
             for job in jobs:
@@ -893,6 +915,10 @@ class Pipeline:
                     break
             self.log(f'第 {pass_number} 轮结束：{dict(tally)} | '
                      f'云盘占用 {human(self.space()["usage"])}')
+            if tally.get('throttled'):
+                return 4 if self.traffic_capped else 1
+            if self.stop():
+                return 1
             # only this run's list: leftovers from earlier link files, or links the
             # user has since dropped, must not force another pass and a non-zero exit
             unfinished = [job.get('key') or job_key(job) for job in jobs
@@ -906,8 +932,8 @@ class Pipeline:
                          '请看上面的失败原因后重跑同一命令', 'error')
                 return 1
             self.log(f'{len(unfinished)} 个链接未完成，进入下一轮补齐')
-        self.log('重跑同一命令即可从断点继续')
-        return 0
+        self.log('仍有链接未完成；重跑同一命令即可从断点继续', 'warn')
+        return 1
 
     def report(self, jobs):
         rows = []
@@ -983,10 +1009,7 @@ class Pipeline:
         else:
             check('curl', 'ok' if curl else 'note',
                   '单流用 urllib，不需要 curl' if not curl else curl)
-        # three directories with three different jobs: the library is where bytes land,
-        # the journal beside it is what a re-run reads, and the account folder holds the
-        # login whichever library is being filled. For the remembered library the last two
-        # are the same path, and one row has to say so rather than report it twice
+        # The library holds bytes and progress; the account directory holds sessions.
         wanted, by_path = [], {}
         for label, path, needs_space in (('库目录', self.args.dest, True),
                                          ('进度目录', self.args.state_dir, False),
@@ -1023,7 +1046,7 @@ class Pipeline:
             check('目的卷', 'note', '大小写不敏感：重名的不同大小写会改名让路（已按此处理）')
         if fcntl:
             try:
-                handle = open(os.path.join(self.args.state_dir, 'grab.lock'), 'a')
+                handle = open(os.path.join(self.args.state_dir, 'lock'), 'a')
             except OSError as error:
                 check('并发实例', 'warn', f'锁文件打不开：{error}')
             else:
@@ -1046,8 +1069,7 @@ class Pipeline:
                               '设置，只读环境变量；被 PikPak 按地址拒绝时看这里）')
         session = self.client.session
         if not session.access_token:
-            check('会话', 'FAIL', f'还没有登录：{self.client.session.path} 里没有会话'
-                  f'（先运行 --login；这一份会话所有库共用）')
+            check('会话', 'FAIL', '还没有可用会话；先运行 --login')
             return self._doctor_verdict(rows)
         minutes = int(session.expires_in() // 60)
         check('会话', 'ok' if session.data.get('refresh_token') else 'warn',
@@ -1063,16 +1085,20 @@ class Pipeline:
             check('账号', 'FAIL', f'API 走不通：{error}')
             return self._doctor_verdict(rows)
         try:
-            mine = {rec.get('restored_id') for rec in records.values()}
-            strangers = [item for item in self.client.list_folder('*')
-                         if item.get('kind') == 'drive#file' and item.get('id') not in mine]
+            folders = [item for item in self.client.list_folder('*')
+                       if item.get('kind') == 'drive#folder'
+                       and item.get('name') == DOT_DIR_NAME]
+            if len(folders) > 1:
+                check('临时目录', 'FAIL', f'网盘根目录有 {len(folders)} 个 {DOT_DIR_NAME}')
+                return self._doctor_verdict(rows)
+            leftovers = self.client.list_folder(folders[0]['id']) if folders else []
         except PikPakError as error:
             check('云端残留', 'warn', f'列不出来：{error}')
         else:
-            size = sum(int(item.get('size') or 0) for item in strangers)
-            check('云端残留', 'warn' if strangers else 'ok',
-                  f'{len(strangers)} 个副本不是本工具记录的，占 {human(size)}（额度按占用计）'
-                  if strangers else '云盘干净')
+            size = sum(int(item.get('size') or 0) for item in leftovers)
+            check('云端残留', 'warn' if leftovers else 'ok',
+                  f'{DOT_DIR_NAME} 内 {len(leftovers)} 项、{human(size)}；下次实际下载启动前会清理'
+                  if leftovers else f'{DOT_DIR_NAME} 内没有待清理内容')
         return self._doctor_verdict(rows)
 
     @staticmethod

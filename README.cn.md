@@ -10,12 +10,12 @@
 一个文件**：
 
 ```
-把 1 个文件转存进云盘 → 下载到本地 → 核对内容 hash → 永久删除云盘副本
+把 1 个文件转存进账号网盘的 `.pikpakget` → 下载到本地 → 核对内容 hash → 永久删除云盘副本
         → 等配额真的回落 → 下一个
 ```
 
-每一个有副作用的动作之前，都会先把计划写进 `state.json`。所以 `Ctrl-C`、断网、
-重启，最多只损失当前正在下的那一个文件；重跑同一条命令就会从停下的地方继续。
+文件进度记录在 `state.json`。所以 `Ctrl-C`、断网或重启后，重跑同一条命令会从未完成
+的文件继续；启动时会清空所选账号网盘 `.pikpakget` 内的旧转存副本。
 
 ## 安装
 
@@ -36,8 +36,10 @@ pip install -e . && pikpakget --help  # 或者装成一个命令行工具
 ## 使用
 
 ```bash
-# 1. 登录一次；会话（可自动续期）保存在 ~/.pikpakget/session.json，权限 600
-python3 -m pikpakget --login you@example.com     # 省略用户名则会在终端里问你要
+# 1. 登录一个或多个账号；各账号会话分开保存，密码不落盘
+python3 -m pikpakget --login first@example.com
+python3 -m pikpakget --login second@example.com
+python3 -m pikpakget --accounts                    # 查看账号与轮换顺序
 
 # 2. 可选：先看清这批链接有多大，这一步完全不占云盘空间
 python3 -m pikpakget links.txt --inventory --inventory-out inventory.csv
@@ -63,8 +65,9 @@ https://mypikpak.com/s/ANOTHER_ID
 python3 -m pikpakget links.txt --status   # 进度、实测速度、剩余时间
 python3 -m pikpakget --version
 python3 -m pikpakget --whoami             # 云盘用量、订阅到期
-python3 -m pikpakget links.txt --dry-run  # 只排计划，不改任何东西
+python3 -m pikpakget links.txt --dry-run  # 只排计划，不转存、下载或清理云端
 python3 -m pikpakget links.txt --max-files 5   # 先试一小口
+python3 -m pikpakget links.txt --account first@example.com  # 只用指定账号
 ```
 
 ## 参数
@@ -73,7 +76,7 @@ python3 -m pikpakget links.txt --max-files 5   # 先试一小口
 |---|---|---|
 | `--dest DIR` | `~/Downloads/PikPak` | 库根目录；每个分组落成 `DIR/<文件夹>/`。进度记的是绝对路径，换 `--dest` 等于开第二个库 —— 想固定下来用 `--set-config dest=...` |
 | `--set-config KEY=VALUE` | — | 把 `dest` 记进 `~/.pikpakget/config.json` 后退出，下次不用带参数（`--set-config dest=` 清掉）。只有 `dest` 可记 |
-| `--connections N` | `4` | 单文件用几条分段连接；`1` 就是普通单流下载 |
+| `--connections N` | `1` | 单文件用几条连接；大于 1 才启用分段下载 |
 | `--gap SEC` | `20` | 文件之间歇一下，压低请求密度 |
 | `--log PATH` | 进度目录里的 `grab-<日期>.log` | 传 `-` 表示只输出到终端 |
 | `--repeat N` | `0`（一轮） | 多轮扫尾，回头补之前失败的；整轮零进展就停 |
@@ -81,10 +84,11 @@ python3 -m pikpakget links.txt --max-files 5   # 先试一小口
 | `--inventory` | 关 | 只统计每个链接的文件数/字节/最大单文件，不下载 |
 | `--doctor` | 关 | 换机器前的预检：Python、curl、FIPS 下的 SHA-1、目录与剩余空间、大小写折叠、会话与配额、云端残留副本；不占额度，有阻塞项时退出码 1 |
 | `--verify` | 关 | 用云端内容 hash 复核所有已下载文件；对不上的改名 `.unverified` 保留（绝不删除），有不符则退出码 1 |
-| `--dry-run` | 关 | 不转存、不写盘、不删除 |
-| `--no-delete` | 关 | 下完不删云盘副本（配额很快就满，仅调试用） |
+| `--dry-run` | 关 | 不转存、下载或清理云端；账号会话可能自动续期 |
+| `--no-delete` | 关 | 本次下载完暂不删云盘副本；下次实际下载启动仍会清空临时文件夹 |
 | `--purge-trash` | 关 | 允许在配额卡住时清空整个回收站 |
-| `--no-sweep` | 关 | 启动时不回收上次中断留下的云端副本 |
+| `--account NAME` | 自动选择 | 只用指定账号；可传显示名称或 `--accounts` 列出的 ID |
+| `--accounts` | — | 按轮换顺序列出已登录账号 |
 | `--folder-map FILE` | 无 | 给没有第二列的链接行提供 `url,folder` 映射 |
 
 ## 配额的真实行为（实测）
@@ -103,8 +107,8 @@ python3 -m pikpakget links.txt --max-files 5   # 先试一小口
   远在上限之内。
 - **每天还有 20 GB 的下行流量上限，比存储额度先到。** 撞到它的那次请求返回的是普通
   的 `HTTP 400` 加一段推销文案 —— 看起来像某个文件坏了，其实是账号今天到顶了。工具
-  认得这个错误，第一次出现就停轮，并把该文件刚花掉的那次尝试还回去，所以下次重跑
-  时预算是满的。稍后再跑同一条命令即可：隔一小时算客气，过了零点算稳妥。
+  认得这个错误，归还该文件的尝试次数，释放账号锁并尝试下一个未锁定的账号。
+  所有账号都触顶时停止，稍后重跑同一命令即可继续。
 - **登录被拒通常是出口地址的问题，不是密码。** PikPak 会直接回 `AccessProhibited`
   （HTTP 400）—— 实测有一台机器直连地址被拒，换到另一个出口几秒后就登录成功。标准
   `*_proxy` 环境变量两半都吃（API 走 `urllib`、分段走 `curl`）—— 但**系统级/桌面代理
@@ -112,9 +116,8 @@ python3 -m pikpakget links.txt --max-files 5   # 先试一小口
   当前实际生效的情况打出来；走代理下载的字节同样计入那个每日上限。
 - **限速是账号级的，不是连接级的。** 长时间跑下来，单连接实测 0.13–0.7 MB/s（会随
   时段下滑）。4 条分段合计只有约 0.25 MiB/s，而且 4 段里有 2 段**一个字节都没拿到**
-  —— 也就是说分段最多带来约 1.5× 收益，多余的通道会被饿死。默认仍是 4（因为这些
-  测量里它确实比单流快），但如果你宁可少下点也别被 CDN 注意，`--connections 1` 是
-  更老实的答案。
+  —— 也就是说分段最多带来约 1.5× 收益，多余的通道会被饿死。因此默认改成稳定的
+  单连接；需要自行尝试分段时再指定 `--connections 4`。
 
 当某一轮完全没有进展时，工具会用一个 1 字节的 range 请求去**探测** CDN，因为两种
 失败原因的应对恰好相反：**被拒**（HTTP 4xx/5xx）是策略信号，于是整轮降级为单连接并
@@ -135,21 +138,18 @@ python3 -m pikpakget links.txt --max-files 5   # 先试一小口
 - 遇到 `429/503/slow down` 按 **30s → 900s** 退避，并丢弃缓存的验证码 token；
 - 连续 3 次达到风控级别的失败就**整轮停手**并提示一小时后再来，而不是一直撞到账号
   被标记；
-- 撞上**每日下行流量上限**时第一次就停手 —— 一次运行里的任何退避都消不掉按天计的
-  额度，接着挨个文件重试只会白烧尝试次数；
+- 撞上**每日下行流量上限**时立即切到下一个未锁定账号；所有账号都用尽后停手；
 - `--gap` 在每个文件之间歇 20 秒，`--limit` / `--max-files` 让你按批有意地做。
 
 如果被限流了，把 `--connections` 降到 `1` 并把 `--gap` 调大。
 
 ## 删除
 
-工具只会删除**它自己创建**的云盘 id（记在 `state.json` 里，重启时会把中断run遗留的
-引用重新载入）。`--purge-trash` 需要显式开启，正是因为清空回收站是账号级、不可撤销
-的操作；真要执行时，会先记录受影响的条目数和总大小。
-
-启动时（唯一没有在途任务的时刻）会自动回收上一次被中断时留在云盘根目录的副本 ——
-否则这些残留会一直占着配额，让后面每次清理都白等 150 秒。它同样只动自己状态里记着的
-id，你自己放的文件和目录一律不碰（`--no-sweep` 可关闭）。
+每个账号的网盘根目录使用专用的 `.pikpakget` 文件夹。实际下载进程取得本地库锁和账号锁
+之后，会**永久删除该文件夹内的全部内容**，再开始转存；文件夹本身保留。请勿把个人文件
+放进去。`--dry-run`、`--inventory`、`--status` 和 `--doctor` 不执行这项清理。
+每个文件下载完成后也会清理其云端副本。`--purge-trash` 仍需显式开启，因为它清空的是
+账号的**整个回收站**。
 
 ## 文件名
 
@@ -168,7 +168,8 @@ id，你自己放的文件和目录一律不碰（`--no-sweep` 可关闭）。
 
 | 目录 | 装什么 |
 |---|---|
-| `~/.pikpakget/` | 会话（`session.json`，0600）、设备号、`config.json` |
+| `~/.pikpakget/` | `accounts.json`、设备号、`config.json` |
+| `~/.pikpakget/accounts/<账号ID>/` | 该账号的 `session.json`（0600）和设备级账号锁 `lock` |
 | `<库>/.pikpakget/` | `state.json`、单实例锁 `lock`、日志；默认库也一样 |
 
 背后两条规则：库靠路径识别，所以把 `--dest` 指到新地方就是开第二个库，而不是接着跑；
@@ -197,7 +198,7 @@ SHA-1"，切块大小由上传者当时用的客户端决定：26 个文件的�
 - 非默认库会把自己的 `state.json` 放在 `<库>/.pikpakget/` 里。进度文件记着真实的分享
   链接、云盘 file id 和本地路径，所以这个名字在 `.gitignore` 里是**不限层级**地忽略的
   —— 别把任何一份提交上去。
-- `~/.pikpakget/` 存着你的会话（`access_token`、一次一换的 `refresh_token`），已在
+- `~/.pikpakget/accounts/<账号ID>/` 存着各账号会话（`access_token`、一次一换的 `refresh_token`），已在
   `.gitignore` 内，会话文件写成 `0600`；`--logout` 会删掉它。
 - `pikpakget/api.py` 里的 `CLIENT_ID` / `CLIENT_SECRET` 是官方客户端的**公开应用
   常量**（客户端本体和已开源的 SDK 里都带着），不是你的账号凭据。除
@@ -208,10 +209,13 @@ SHA-1"，切块大小由上传者当时用的客户端决定：26 个文件的�
 
 ```
 pikpakget/api.py       HTTP 客户端：会话、验证码签名、分享/云盘/回收站接口
+pikpakget/accounts.py  设备账号列表与账号锁
 pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
-tests/test_pure.py     159 项纯逻辑测试；不涉及账号、不联网
+tests/test_pure.py     153 项纯逻辑测试；不涉及真实账号、不联网
+tests/test_accounts.py   5 项多账号与锁测试；使用合成账号
+tests/test_rotation.py   2 项账号切换与全部被锁测试；使用合成账号
 tests/test_transfer.py   5 项真下载测试：本地 HTTP + 真 curl
 ```
 

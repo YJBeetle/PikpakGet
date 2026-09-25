@@ -10,6 +10,7 @@ import time
 from . import __version__
 from .api import (DEFAULT_DEST, DOT_DIR_NAME, Client, PikPakError,
                  account_dir)
+from .accounts import Accounts
 from .pipeline import Log, Pipeline, human, load_folder_map, read_links
 
 try:
@@ -130,7 +131,6 @@ def write_config(pairs):
     os.replace(tmp, path)
     print(f'已写入 {path}：'
           + (f'dest={stored["dest"]}' if stored else '已清空，回到 ~/Downloads/PikPak'))
-    # the remembered library is by definition the one whose journal stays in home
     print(f'不带 --dest 就跑这个库，进度记在 {os.path.join(stored.get("dest", default_dest()), DOT_DIR_NAME)}')
     return 0
 
@@ -148,6 +148,8 @@ def build_parser():
     parser.add_argument('--password-stdin', action='store_true',
                         help='read the password from stdin instead of a prompt')
     parser.add_argument('--logout', action='store_true', help='delete the stored session')
+    parser.add_argument('--accounts', action='store_true', help='list saved accounts in rotation order')
+    parser.add_argument('--account', help='use one account by label or ID; with --logout, remove it')
     parser.add_argument('--set-config', action='append', metavar='KEY=VALUE',
                         help='remember a setting in ~/.pikpakget/config.json and exit '
                              '(the only key is dest; `--set-config dest=` forgets it)')
@@ -167,7 +169,7 @@ def build_parser():
                                              'a links file line has no folder column')
     parser.add_argument('--default-folder', default='(unfiled)',
                         help='folder name for lines without one (default: %(default)s)')
-    parser.add_argument('--connections', type=int, default=4,
+    parser.add_argument('--connections', type=int, default=1,
                         help='ranged connections per file. Use 1 for a plain single '
                              'stream. On a free account extra lanes are often starved; '
                              'if one is refused outright the run drops to 1 connection '
@@ -188,12 +190,10 @@ def build_parser():
                         help='re-check every file already marked downloaded against the '
                              'content hash the share reports; deletes nothing, exits 1 on '
                              'a mismatch')
-    parser.add_argument('--dry-run', action='store_true', help='plan only; no writes, no deletes')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='plan only; no restore, download or cloud cleanup')
     parser.add_argument('--no-delete', action='store_true',
                         help='keep the cloud copies after downloading (fills the quota fast)')
-    parser.add_argument('--no-sweep', action='store_true',
-                        help='do not reclaim the cloud copies an earlier interrupted run '
-                             'left behind at startup (they otherwise occupy quota)')
     parser.add_argument('--purge-trash', action='store_true',
                         help='allow emptying the whole trash when the quota is the blocker')
     parser.add_argument('--yes', action='store_true', help='ignore unparsable link lines')
@@ -234,17 +234,17 @@ def main(argv=None):
         print('单实例锁依赖 POSIX 的 fcntl，Windows 上不支持：请在 WSL 或 Linux/macOS 里运行',
               file=sys.stderr)
         return 2
-    # a preflight that dies on the very problem it is meant to report is useless, so
-    # --doctor neither creates the state directory nor writes a log into it
-    try:
-        os.makedirs(args.state_dir, exist_ok=True)
-    except OSError as error:
-        if not args.doctor:
+    readonly = (args.doctor or args.status_only or args.whoami or args.accounts
+                or args.login is not None or args.logout or args.dry_run or args.inventory_only)
+    if not readonly:
+        try:
+            os.makedirs(args.state_dir, exist_ok=True)
+        except OSError as error:
             print(f'进度目录不可用：{args.state_dir}（{error}）', file=sys.stderr)
             return 2
     # an unattended run outlives the terminal, so the same lines that scroll past
     # are kept on disk (stdout stays the primary output)
-    log = (Log(quiet=args.quiet) if args.doctor or args.log == '-'
+    log = (Log(quiet=args.quiet) if readonly or args.log == '-'
            else Log(os.path.join(args.state_dir, f'grab-{time.strftime("%Y-%m-%d")}.log'),
                     args.quiet))
     # the log is opened here, so it has to be closed here: every early return used to
@@ -258,21 +258,12 @@ def main(argv=None):
 
 def _commands(args, log):
     try:
-        # the login and the device id belong to the account, so they stay in home even
-        # when this library carries its journal elsewhere: a second --dest must not mean
-        # a second sign-in, and must not move the credential onto a mounted volume
-        client = Client(session_path=os.path.join(args.account_dir, 'session.json'),
-                        device_id_path=os.path.join(args.account_dir, 'device_id'), logger=log)
-    except OSError as error:
-        # the device id is written into the account directory, so an unusable one fails
-        # here rather than in whatever call happens to need it first — and a device id
-        # that silently became random would change how the account looks to PikPak
-        print(f'账号目录不可用：{args.account_dir}（{error}）', file=sys.stderr)
-        return 1 if args.doctor else 2
-    # every command below can fail for reasons that are the user's to act on — no
-    # session, a refused login, a blocked account — and a Python traceback says
-    # nothing more useful than the one line we can print; only a real bug earns one
-    try:
+        registry = Accounts(args.account_dir)
+        if args.doctor and not registry.items:
+            client = Client(session_path=None,
+                            device_id_path=os.path.join(args.account_dir, 'device_id'),
+                            logger=log)
+            return Pipeline(args, log, client=client).doctor()
         if args.login is not None:
             account = args.login
             if not account:
@@ -287,57 +278,111 @@ def _commands(args, log):
                     return 2
             password = (sys.stdin.read().strip() if args.password_stdin
                         else getpass.getpass('PikPak 密码: '))
-            client.sign_in(account, password)
+            item = registry.login(account, password, logger=log)
+            log(f'已保存账号 {item["label"]}（ID {item["id"]}）')
+            return 0
+        if args.accounts:
+            for index, item in enumerate(registry.items, 1):
+                print(f'{index}. {item["label"]}  {item["id"]}')
+            if not registry.items:
+                print('尚无账号；先运行 --login')
             return 0
         if args.logout:
-            client.session.forget()
-            log(f'已删除本地会话（{os.path.join(args.account_dir, "session.json")}）')
+            if not registry.items:
+                raise PikPakError('没有已登录账号')
+            if not args.account and len(registry.items) != 1:
+                raise PikPakError('有多个账号时，--logout 需要同时指定 --account')
+            item = registry.find(args.account) if args.account else registry.items[0]
+            registry.logout(item)
+            log(f'已删除账号 {item["label"]} 的本地会话')
             return 0
-        pipeline = Pipeline(args, log, stop=lambda: STOP)
-        if args.doctor:
-            return pipeline.doctor()
-        if args.status_only:
-            return pipeline.status()
-        if args.whoami:
-            about = client.about()
-            space = client.space()
-            expires = str(about.get('expires_at') or '').strip()
-            trash = f'，回收站占 {human(space["in_trash"])}' if space['in_trash'] else ''
-            print(f'云盘   {human(space["usage"])} / {human(space["limit"])}{trash}')
-            print(f'订阅   {expires.split("T")[0] + " 到期" if expires else "无到期时间"}')
-            return 0
+        jobs = None
+        if args.links:
+            jobs, problems = read_links(args.links, load_folder_map(args.folder_map),
+                                       args.default_folder)
+            for problem in problems:
+                log(problem, 'error')
+            if problems and not args.yes:
+                return 2
+            if not jobs:
+                raise PikPakError('链接文件里没有可用链接')
+        elif not (args.doctor or args.status_only or args.whoami):
+            build_parser().error('a links file is required (or use --login/--whoami/--status)')
+        writable_job = jobs is not None and not (args.dry_run or args.inventory_only)
+        library_lock = _acquire_lock(args.state_dir) if writable_job else None
+        if writable_job and library_lock is None:
+            print(f'本地库正在被另一个进程使用：{args.state_dir}/lock')
+            return 3
+        try:
+            if jobs:
+                _install_stop_handler()
+            excluded = set()
+            remaining_files = args.max_files
+            while True:
+                item, account_lock = registry.choose(excluded, only=args.account)
+                if account_lock is None:
+                    if not registry.items:
+                        raise PikPakError('没有已登录账号；先运行 --login')
+                    candidates = [entry for entry in registry.items
+                                  if entry['id'] not in excluded and
+                                  (not args.account or entry['id'] == registry.find(args.account)['id'])]
+                    if not candidates:
+                        log('所有可用账号均已触及流量限制或初始化失败', 'error')
+                        return 1
+                    print('没有可用账号：所有账号都被其他进程锁定')
+                    return 3
+                try:
+                    client = registry.client(item, logger=log)
+                    actual_download = jobs and not (args.verify_only or args.dry_run
+                                                     or args.inventory_only)
+                    if actual_download:
+                        try:
+                            workspace_id = client.prepare_workspace()
+                        except PikPakError as error:
+                            log(f'账号 {item["label"]} 的网盘临时文件夹无法清理：{error}', 'error')
+                            excluded.add(item['id'])
+                            continue
+                    else:
+                        workspace_id = None
+                    if remaining_files:
+                        args.max_files = remaining_files
+                    pipeline = Pipeline(args, log, stop=lambda: STOP, client=client,
+                                        account_id=item['id'], workspace_id=workspace_id)
+                    if args.doctor:
+                        return pipeline.doctor()
+                    if args.status_only:
+                        return pipeline.status()
+                    if args.whoami:
+                        about = client.about()
+                        space = client.space()
+                        expires = str(about.get('expires_at') or '').strip()
+                        print(f'账号   {item["label"]}')
+                        print(f'云盘   {human(space["usage"])} / {human(space["limit"])}')
+                        print(f'订阅   {expires.split("T")[0] + " 到期" if expires else "无到期时间"}')
+                        return 0
+                    if args.verify_only:
+                        return pipeline.verify(jobs)
+                    code = pipeline.run(jobs)
+                    if code == 4:
+                        if remaining_files:
+                            remaining_files -= pipeline.files_done
+                            if remaining_files <= 0:
+                                return 1
+                        excluded.add(item['id'])
+                        log(f'账号 {item["label"]} 下行流量已满，尝试下一个账号', 'warn')
+                        continue
+                    return code
+                finally:
+                    account_lock.close()
+        finally:
+            if library_lock:
+                library_lock.close()
     except PikPakError as error:
         print(f'错误：{error}', file=sys.stderr)
         return 2
-    if not args.links:
-        build_parser().error('a links file is required (or use --login/--whoami/--status)')
-
-    lock = _acquire_lock(args.state_dir)
-    if lock is None:
-        print('另一个实例正在运行（state 目录下的 grab.lock 被占用），先停掉它')
-        return 3
-    jobs, problems = read_links(args.links, load_folder_map(args.folder_map),
-                               args.default_folder)
-    for problem in problems:
-        log(problem, 'error')
-    if problems and not args.yes:
-        log('链接文件有无法解析的行，先修好再跑（或加 --yes 跳过这些行）', 'error')
+    except OSError as error:
+        print(f'本地文件操作失败：{error}', file=sys.stderr)
         return 2
-    if not jobs:
-        log('链接文件里没有可用链接', 'error')
-        return 2
-    _install_stop_handler()
-    if args.verify_only:
-        return pipeline.verify(jobs)
-    if args.dry_run:
-        log('dry-run：不会转存、下载或删除')
-    try:
-        return pipeline.run(jobs)
-    except PikPakError as error:
-        log(f'中止：{error}', 'error')
-        return 1
-    finally:
-        lock.close()
 
 
 if __name__ == '__main__':

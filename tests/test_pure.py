@@ -473,7 +473,7 @@ class TestPipelineStartup(unittest.TestCase):
         args = argparse.Namespace(state_dir=state_dir, dest=os.path.join(dirpath, 'lib'),
                                   max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
                                   inventory_only=False, limit=0, purge_trash=False,
-                                  no_delete=True, no_sweep=True)
+                                  no_delete=True)
         pipeline = Pipeline(args, Log(quiet=True))
         self.assertIsInstance(pipeline._case_folded, bool)
         # the map holds the *source path inside the share*, which is what a later
@@ -494,7 +494,7 @@ class TestStatusWithoutProgress(unittest.TestCase):
                                   dest=os.path.join(self.dir, 'lib'), max_files=0,
                                   connections=1, gap=0, repeat=0, dry_run=False,
                                   inventory_only=False, limit=0, purge_trash=False,
-                                  no_delete=True, no_sweep=True)
+                                  no_delete=True)
         os.makedirs(args.dest)
         self.pipeline = Pipeline(args, Log(quiet=True))
 
@@ -546,12 +546,9 @@ class TestLoginNeedsNoArgument(unittest.TestCase):
     """`--login` with no value is the first thing anyone types; argparse answered it
     with an English usage dump, which is not a reply to a question about the account."""
 
-    class FakeClient:
-        def __init__(self, **kwargs):
-            pass
-
-        def sign_in(self, account, password):
-            LoginCalls.append((account, password))
+    def fake_login(self, account, password, logger=None):
+        LoginCalls.append((account, password))
+        return {'id': 'fake-id', 'label': account}
 
     def setUp(self):
         import unittest.mock
@@ -559,7 +556,7 @@ class TestLoginNeedsNoArgument(unittest.TestCase):
         LoginCalls = []
         import pikpakget.cli as cli
         self.cli = cli
-        self.patch = unittest.mock.patch.object(cli, 'Client', TestLoginNeedsNoArgument.FakeClient)
+        self.patch = unittest.mock.patch.object(cli.Accounts, 'login', self.fake_login)
         self.patch.start()
         self.addCleanup(self.patch.stop)
         self.getpass = unittest.mock.patch.object(cli.getpass, 'getpass', lambda prompt: 'pw')
@@ -642,8 +639,7 @@ class TestErrorsAreReadable(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertNotIn('Traceback', text)
         self.assertEqual(text.count('错误：'), 1, text)
-        self.assertIn(os.path.join('nostate', '.pikpakget', 'session.json'), text,
-                    'it must say which file it looked in')
+        self.assertIn('先运行 --login', text)
 
     def test_a_local_failure_does_not_report_an_http_status(self):
         from pikpakget.api import PikPakError
@@ -770,7 +766,8 @@ class TestPreflightSurvivesItsOwnSubject(unittest.TestCase):
         with contextlib.redirect_stderr(buffer):
             code = self.cli.main(['--status', '--dest', self.unusable])
         self.assertEqual(code, 2)
-        self.assertIn('进度目录不可用', buffer.getvalue())
+        self.assertIn('没有已登录账号', buffer.getvalue())
+        self.assertFalse(os.path.exists(self.unusable))
 
     def test_doctor_creates_a_directory_a_run_would_have_created(self):
         import contextlib
@@ -781,7 +778,7 @@ class TestPreflightSurvivesItsOwnSubject(unittest.TestCase):
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'), dest=dest,
                                   max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
                                   inventory_only=False, limit=0, purge_trash=False,
-                                  no_delete=True, no_sweep=True, doctor=False)
+                                  no_delete=True, doctor=False)
         pipeline = Pipeline(args, Log(quiet=True))
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
@@ -795,7 +792,7 @@ class TestPreflightSurvivesItsOwnSubject(unittest.TestCase):
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state2'),
                                   dest=self.unusable, max_files=0, connections=1, gap=0,
                                   repeat=0, dry_run=False, inventory_only=False, limit=0,
-                                  purge_trash=False, no_delete=True, no_sweep=True)
+                                  purge_trash=False, no_delete=True)
         self.assertEqual(Pipeline(args, Log(quiet=True)).run([]), 2)
 
 
@@ -842,7 +839,7 @@ class TestDoctor(RunLinkHarness):
         code, output = self.run_doctor()
         self.assertEqual(code, 1)
         self.assertIn('--login', output)
-        self.assertIn('session.json', output, 'the message has to name the file it looked in')
+        self.assertIn('没有可用会话', output)
 
     def test_a_missing_curl_blocks_segmentation(self):
         import types
@@ -869,12 +866,14 @@ class TestDoctor(RunLinkHarness):
             _, output = self.run_doctor()
         self.assertIn('127.0.0.1:7890', output)
 
-    def test_a_stranger_on_the_drive_is_only_a_warning(self):
-        self.stub_client(list_folder=lambda parent='*': [
-            {'kind': 'drive#file', 'id': 'SOMEONE_ELSE', 'size': '1600000000'}])
+    def test_staging_folder_leftovers_are_only_a_warning(self):
+        self.stub_client(list_folder=lambda parent='*': (
+            [{'kind': 'drive#folder', 'id': 'STAGING', 'name': '.pikpakget'}]
+            if parent == '*' else
+            [{'kind': 'drive#file', 'id': 'OLD_COPY', 'size': '1600000000'}]))
         code, output = self.run_doctor()
         self.assertEqual(code, 0, output)
-        self.assertIn('不是本工具记录的', output)
+        self.assertIn('.pikpakget 内 1 项', output)
 
     def test_a_dead_api_is_a_failure_with_its_reason(self):
         from pikpakget.api import PikPakError
@@ -899,7 +898,7 @@ class TestVolumeFolding(unittest.TestCase):
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'), dest=self.dir,
                                   max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
                                   inventory_only=False, limit=0, purge_trash=False,
-                                  no_delete=True, no_sweep=True)
+                                  no_delete=True)
         self.pipeline = Pipeline(args, Log(quiet=True))
         self.dest = os.path.join(self.dir, 'Series')
         os.makedirs(self.dest)
@@ -974,6 +973,7 @@ class TestLinkIdentity(unittest.TestCase):
         self.assertEqual([job['folder'] for job in jobs], ['SeriesA', 'SeriesB'])
         self.assertNotEqual(jobs[0]['key'], jobs[1]['key'])
 
+
     def test_a_stale_link_from_an_earlier_list_does_not_extend_the_run(self):
         import argparse
         from pikpakget.pipeline import Log, Pipeline
@@ -981,7 +981,7 @@ class TestLinkIdentity(unittest.TestCase):
         args = argparse.Namespace(state_dir=os.path.join(dirpath, '.state'), dest=dirpath,
                                   max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
                                   inventory_only=False, limit=0, purge_trash=False,
-                                  no_delete=True, no_sweep=True)
+                                  no_delete=True)
         pipeline = Pipeline(args, Log(quiet=True))
         pipeline.space = lambda: {'limit': 6_000_000_000, 'usage': 0, 'in_trash': 0,
                                   'free': 6_000_000_000}
@@ -999,6 +999,41 @@ class TestLinkIdentity(unittest.TestCase):
         self.assertEqual(pipeline.run(jobs), 0)
         self.assertEqual(passes, [jobs[0]['key']],
                          'one pass is enough when this run finished its own list')
+
+
+class TestSameShareTwoDownloads(RunLinkHarness):
+    def test_the_same_share_file_is_downloaded_into_both_folders(self):
+        self.module.download_stream = self.fake_stream
+        node = {'id': 'SHAREFILE1', 'name': 'a.mp4', 'size': 100,
+                'path': 'a.mp4', 'hash': None, 'is_folder': False}
+        self.pipeline.inventory = lambda job: {
+            'title': 'Series', 'token': 'TOKEN', 'files': [node],
+            'total': 100, 'folders': 0, 'truncated': False}
+        url = 'https://mypikpak.com/s/EXAMPLEID1111111111'
+        for folder in ('SeriesA', 'SeriesB'):
+            job = {'url': url, 'share_id': 'EXAMPLEID1111111111',
+                   'pass_code': '', 'folder': folder, 'order': 1}
+            self.assertEqual(self.pipeline.run_link(job), 'ok')
+            self.assertTrue(os.path.isfile(os.path.join(self.lib, folder, 'a.mp4')))
+        self.assertEqual(len(self.downloads), 2)
+        self.assertEqual(len(self.pipeline.state.data['files']), 2)
+
+
+class TestDryRunIsReadOnly(unittest.TestCase):
+    def test_dry_run_does_not_create_a_library_journal_or_clean_cloud(self):
+        from pikpakget.pipeline import Log, Pipeline
+        root = tempfile.mkdtemp()
+        dest = os.path.join(root, 'missing-library')
+        args = argparse.Namespace(state_dir=os.path.join(dest, '.pikpakget'),
+                                  dest=dest, max_files=0, connections=1, gap=0,
+                                  repeat=0, dry_run=True, inventory_only=False,
+                                  limit=0)
+        pipeline = Pipeline(args, Log(quiet=True))
+        pipeline.inventory = lambda job: {'files': [], 'total': 0}
+        job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111',
+               'share_id': 'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'S'}
+        self.assertEqual(pipeline.run([job]), 0)
+        self.assertFalse(os.path.exists(dest))
 
 
 class TestFailureClassification(unittest.TestCase):
@@ -1090,32 +1125,11 @@ class TestSingleStreamInterrupt(unittest.TestCase):
         self.assertEqual(os.path.getsize(self.target), 3 << 20)
 
 
-class TestSweepBaseline(RunLinkHarness):
-    """The startup sweep must wait for the reclaimed bytes to come back, not for the
-    whole drive to empty."""
-
-    def test_reclaim_waits_against_usage_before_the_delete(self):
-        self.pipeline.state.file('SHAREFILE1').update(
-            {'restored_id': 'CLOUD1', 'state': 'restoring', 'size': 400})
-        self.pipeline.client.list_folder = lambda parent='*': [
-            {'kind': 'drive#file', 'id': 'CLOUD1', 'size': '400'}]
-        self.pipeline.client.cleanup = lambda ids: None
-        readings = iter([1000, 600])                  # 400 reclaimed, 600 unrelated left
-        self.pipeline.space = lambda: {'limit': 6442450944, 'usage': next(readings),
-                                       'in_trash': 0, 'free': 0}
-        waits = []
-        self.pipeline.wait_space_freed = lambda size, before=None: waits.append((size, before)) or {
-            'usage': 600}
-        self.pipeline.sweep_leftovers()
-        self.assertEqual(waits, [(400, 1000)],
-                         'before must be the usage read before the delete; passing the '
-                         'reclaimed size makes the floor 0 and stalls on any other file')
-
-
 class TestMovedDownloadsDoNotBreakTheRun(RunLinkHarness):
     def test_a_moved_finished_file_is_redownloaded_instead_of_crashing(self):
         gone = os.path.join(self.lib, 'Series', 'a.mp4')
-        record = self.pipeline.state.file('SHAREFILE1', 'https://mypikpak.com/s/EXAMPLEID1111111111')
+        record = self.pipeline.state.file('SHAREFILE1',
+            'https://mypikpak.com/s/EXAMPLEID1111111111\tSeries')
         record.update({'state': 'downloaded', 'local': gone, 'size': 100})
         outcome, node = self.run_one()                      # before the fix: FileNotFoundError
         self.assertEqual(len(self.downloads), 1)
@@ -1128,7 +1142,8 @@ class TestMovedDownloadsDoNotBreakTheRun(RunLinkHarness):
         os.makedirs(os.path.dirname(keep))
         with open(keep, 'wb') as handle:
             handle.truncate(100)
-        self.pipeline.state.file('SHAREFILE1').update(
+        self.pipeline.state.file('SHAREFILE1',
+            'https://mypikpak.com/s/EXAMPLEID1111111111\tSeries').update(
             {'state': 'done', 'local': keep, 'size': 100,
              'url': 'https://mypikpak.com/s/EXAMPLEID1111111111'})
         outcome, node = self.run_one()
@@ -1182,14 +1197,15 @@ class TestForeignFileIsNeverDeleted(unittest.TestCase):
         self.assertEqual(how, 'downloaded')
         self.assertTrue(os.path.isfile(final))
 
-    def test_our_own_stale_copy_is_replaced_quietly(self):
+    def test_another_records_copy_is_preserved(self):
         path = os.path.join(self.lib, 'movie.mp4')
         self.write_existing('movie.mp4', b'half-written by us earlier')
         self.pipeline.state.file('OTHER')['local'] = path
         self.pipeline.state.file('OTHER')['state'] = 'done'
         self.pipeline.state.file('OTHER')['size'] = 3
         self.grab()
-        self.assertEqual([name for name in os.listdir(self.lib) if '.conflict-' in name], [])
+        self.assertEqual(len([name for name in os.listdir(self.lib)
+                              if '.conflict-' in name]), 1)
         self.assertEqual(os.path.getsize(path), 10)
 
 
@@ -1400,8 +1416,7 @@ class TestQuotaWait(unittest.TestCase):
         from pikpakget.pipeline import Log, Pipeline
         dirpath = tempfile.mkdtemp()
         args = argparse.Namespace(state_dir=os.path.join(dirpath, '.state'), dest=dirpath,
-                                  max_files=0, connections=1, gap=0, repeat=0,
-                                  no_sweep=True)
+                                  max_files=0, connections=1, gap=0, repeat=0)
         self.pipeline = Pipeline(args, Log(quiet=True))
         self.readings = []
 
@@ -1560,66 +1575,6 @@ class TestTransientNetworkRetry(unittest.TestCase):
         self.assertEqual(self.slept, [30])
 
 
-class TestStartupSweep(unittest.TestCase):
-    """The sweep runs where nothing is in flight, and must never touch a file the
-    user put there themselves — only copies our own state recorded."""
-
-    def setUp(self):
-        from pikpakget.pipeline import Log, Pipeline
-        self.dir = tempfile.mkdtemp()
-        args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
-                                  dest=os.path.join(self.dir, 'lib'), max_files=0,
-                                  connections=1, gap=0, repeat=0, no_sweep=False)
-        self.pipeline = Pipeline(args, Log(quiet=True))
-        self.removed = []
-        calls = collections.deque([
-            {'id': 'OURS_A', 'kind': 'drive#file', 'size': '10'},
-            {'id': 'SOMEONE_ELS', 'kind': 'drive#file', 'size': '99'},
-            {'id': 'FOLDER', 'kind': 'drive#folder', 'size': '0'},
-        ])
-        self.pipeline.client.list_folder = lambda parent_id='*', **kw: list(calls)
-        self.pipeline.client.cleanup = lambda ids: self.removed.extend(ids)
-        self.pipeline.space = lambda: {'limit': 6_000_000_000, 'usage': 500,
-                                        'in_trash': 0, 'free': 5_500_000_000}
-        self.pipeline.wait_space_freed = lambda size, before=None: {
-            'limit': 6_000_000_000, 'usage': 0, 'in_trash': 0, 'free': 6_000_000_000}
-        self.state = self.pipeline.state
-        self.state.file('FILE_A', 'url')['state'] = 'restoring'
-        self.state.file('FILE_A', 'url')['restored_id'] = 'OURS_A'
-        self.state.file('FILE_B', 'url')['state'] = 'restoring'
-        self.state.file('FILE_B', 'url')['restored_id'] = 'OURS_B'      # gone already
-        self.state.file('FILE_DONE', 'url')['state'] = 'done'
-        self.state.file('FILE_DONE', 'url')['restored_id'] = 'DONE_ID'
-        self.state.save()
-
-    def sweep(self):
-        return self.pipeline.sweep_leftovers()
-
-    def test_only_our_recorded_copy_is_removed(self):
-        self.sweep()
-        self.assertEqual(self.removed, ['OURS_A'])
-
-    def test_foreign_files_and_folders_are_untouched(self):
-        self.sweep()
-        self.assertNotIn('SOMEONE_ELS', self.removed)
-        self.assertNotIn('FOLDER', self.removed)
-
-    def test_a_completed_file_is_never_reclaimed(self):
-        self.sweep()
-        self.assertNotIn('DONE_ID', self.removed)
-
-    def test_the_stale_reference_is_cleared_for_the_next_attempt(self):
-        self.sweep()
-        self.assertIsNone(self.state.data['files']['FILE_A']['restored_id'])
-
-    def test_nothing_happens_without_recorded_copies(self):
-        self.removed.clear()
-        for rec in self.state.data['files'].values():
-            rec['restored_id'] = None
-        self.sweep()
-        self.assertEqual(self.removed, [])
-
-
 class TestStopOnZeroProgress(unittest.TestCase):
     """Repeat passes exist to pick up transient failures; looping while nothing
     lands is exactly the hammering that gets an account flagged."""
@@ -1629,8 +1584,7 @@ class TestStopOnZeroProgress(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
                                   dest=os.path.join(self.dir, 'lib'), max_files=0,
-                                  connections=1, gap=0, repeat=0, dry_run=True,
-                                  no_sweep=True,
+                                  connections=1, gap=0, repeat=0, dry_run=False,
                                   inventory_only=False, limit=0, purge_trash=False,
                                   no_delete=False, log='-', quiet=True)
         self.pipeline = Pipeline(args, Log(quiet=True))
@@ -1816,49 +1770,6 @@ class TestState(unittest.TestCase):
         with open(self.path) as handle:
             json.load(handle)
         self.assertFalse(os.path.exists(self.path + '.tmp'))
-
-
-class TestStateKeyCannotHideWork(RunLinkHarness):
-    """The bug this guards: records created before the key change still carry the
-    bare URL, so grouping files by the link key returned nothing, `pending` looked
-    empty, and a link with two files left on the cloud was declared done."""
-
-    def seed_stale_record(self, file_id, url):
-        self.pipeline.state.data['files'][file_id] = {
-            'state': 'pending', 'attempts': self.module.MAX_ATTEMPTS - 1, 'url': url,
-            'restored_id': None, 'local': None, 'size': 100, 'seconds': None,
-            'error': None, 'name': 'a.mp4', 'path': 'a.mp4'}
-
-    def test_abandoned_file_keeps_the_link_incomplete(self):
-        url = 'https://mypikpak.com/s/EXAMPLEID1111111111'
-        self.seed_stale_record('SHAREFILE1', url)
-        def refuse(*rest, **kwargs):
-            raise OSError('connection reset')
-        self.module.download_stream = refuse
-        node = {'id': 'SHAREFILE1', 'name': 'a.mp4', 'size': 100, 'path': 'a.mp4',
-                'hash': None, 'is_folder': False}
-        self.pipeline.inventory = lambda job: {
-            'title': 'Series', 'token': 'TOKEN', 'files': [node],
-            'total': 100, 'folders': 0, 'truncated': False}
-        job = {'url': url, 'share_id': 'EXAMPLEID1111111111', 'pass_code': '',
-               'folder': 'Series', 'order': 1}
-        self.assertEqual(self.pipeline.run_link(job), 'incomplete')
-        self.assertEqual(self.pipeline.state.link(job['url'] + '\tSeries')['status'],
-                         'incomplete')
-
-    def test_finished_file_with_a_stale_url_is_not_downloaded_twice(self):
-        local = os.path.join(self.dir, 'already.mp4')
-        with open(local, 'wb') as handle:
-            handle.truncate(100)
-        self.seed_stale_record('SHAREFILE1', 'https://mypikpak.com/s/EXAMPLEID1')
-        self.pipeline.state.data['files']['SHAREFILE1'].update(
-            {'state': 'done', 'attempts': 1, 'local': local})
-        self.assertEqual(self.run_one()[0], 'ok')
-        self.assertEqual(self.downloads, [])
-        # the record keeps pointing at the key it was created under; nothing reads
-        # that field to decide whether work remains
-        self.assertEqual(self.pipeline.state.file('SHAREFILE1')['url'],
-                         'https://mypikpak.com/s/EXAMPLEID1')
 
 
 class TestSignInDiagnostics(unittest.TestCase):
@@ -2104,7 +2015,7 @@ class TestCapDoesNotCondemnTheFile(RunLinkHarness):
             TrafficCapped('今日下行流量已到上限', status=400, code=3))
         outcome, _ = self.run_one(size=100)
         self.assertEqual(outcome, 'throttled')
-        record = self.pipeline.state.data['files']['SHAREFILE1']
+        record = self.pipeline.state.file('SHAREFILE1')
         self.assertEqual((record['state'], record['attempts']), ('pending', 0))
         self.assertIn('流量', record['error'])
 

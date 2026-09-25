@@ -10,13 +10,13 @@ and a shared folder is routinely hundreds of GB to tens of TB. You cannot "save 
 — so this tool works one *file* at a time:
 
 ```
-restore one file into your drive  →  download it  →  verify its content hash
+restore one file into the account's cloud `.pikpakget`  →  download it  →  verify its content hash
       →  permanently delete the cloud copy  →  wait for the quota to drop  →  next
 ```
 
-Everything is journalled to `state.json` before each side effect, so `Ctrl-C`,
-a dropped connection or a reboot costs you at most the file in flight: rerun the
-same command and it picks up where it stopped.
+File progress is recorded in `state.json`. After an interruption, rerun the same
+command to continue unfinished files. Startup clears stale cloud copies inside the
+selected account's `.pikpakget` folder.
 
 ## Install
 
@@ -38,8 +38,10 @@ pip install -e . && pikpakget --help  # or get a console script
 ## Use
 
 ```bash
-# 1. one-time sign-in; stores a refreshable session in ~/.pikpakget/session.json (0600)
-python3 -m pikpakget --login you@example.com
+# 1. sign in to one or more accounts; passwords are not stored
+python3 -m pikpakget --login first@example.com
+python3 -m pikpakget --login second@example.com
+python3 -m pikpakget --accounts
 
 # 2. optional: see what a link list contains, using zero cloud space
 python3 -m pikpakget links.txt --inventory --inventory-out inventory.csv
@@ -66,8 +68,9 @@ Other useful entry points:
 python3 -m pikpakget links.txt --status         # progress, measured speed, ETA
 python3 -m pikpakget --version
 python3 -m pikpakget --whoami                  # space used and subscription expiry
-python3 -m pikpakget links.txt --dry-run       # plan the work, change nothing
+python3 -m pikpakget links.txt --dry-run       # plan without cloud changes or downloads
 python3 -m pikpakget links.txt --max-files 5   # dip a toe in
+python3 -m pikpakget links.txt --account first@example.com  # use only one account
 ```
 
 ## Options
@@ -76,7 +79,7 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 |---|---|---|
 | `--dest DIR` | `~/Downloads/PikPak` | root of the library; each folder becomes `DIR/<folder>/`. State records absolute paths, so a different `--dest` is a second library — remember yours with `--set-config dest=...` |
 | `--set-config KEY=VALUE` | — | store `dest` in `~/.pikpakget/config.json` and exit, so the next run needs no flag (`--set-config dest=` clears it). `dest` is the only storable key |
-| `--connections N` | `4` | ranged connections per file; `1` = plain single stream |
+| `--connections N` | `1` | connections per file; values above 1 enable ranged segments |
 | `--gap SEC` | `20` | rest between files, keeps request density low |
 | `--log PATH` | `grab-<date>.log` beside the journal | `-` for stdout only |
 | `--repeat N` | `0` (one pass) | re-pass the list to finish links that failed transiently; stops when a whole pass lands nothing |
@@ -84,10 +87,11 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | `--inventory` | off | size up every link (count, bytes, largest file), no downloads |
 | `--doctor` | off | preflight this machine (python, curl, FIPS SHA-1, volumes, session, quota, stale cloud copies); no cloud space, exits 1 on anything blocking |
 | `--verify` | off | re-check every already-downloaded file against the server's content hash; quarantines what fails as `<name>.unverified` (never deletes), exits 1 on a mismatch |
-| `--dry-run` | off | no restores, no writes, no deletes |
-| `--no-delete` | off | keep cloud copies after downloading (fills the quota fast) |
+| `--dry-run` | off | no restores, downloads or cloud cleanup; a session may refresh |
+| `--no-delete` | off | leave copies after this run; the next actual download run still clears the staging folder |
 | `--purge-trash` | off | allow emptying the whole trash if the quota is the blocker |
-| `--no-sweep` | off | don't reclaim cloud copies an interrupted run left behind at startup |
+| `--account NAME` | automatic | use only this account, by label or ID |
+| `--accounts` | — | list accounts in rotation order |
 | `--folder-map FILE` | none | `url,folder` mapping for lines without a folder column |
 | `--default-folder NAME` | `(unfiled)` | folder for lines that carry no name |
 | `--inventory-out FILE` | `inventory.csv` | where `--inventory` writes |
@@ -99,7 +103,8 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 
 | directory | holds |
 |---|---|
-| `~/.pikpakget/` | the login (`session.json`, 0600), the device id, and `config.json` |
+| `~/.pikpakget/` | `accounts.json`, the device id, and `config.json` |
+| `~/.pikpakget/accounts/<account ID>/` | that account's `session.json` (0600) and device-local `lock` |
 | `<library>/.pikpakget/` | `state.json`, the library lock named `lock`, and logs, including for the default library |
 
 A library is identified by its path. Every library carries its own progress; account
@@ -124,10 +129,9 @@ Measured on a free account, and worth knowing before you plan a large run:
 - **A daily downstream traffic cap bites before the storage quota does.** The free tier
   stops serving bytes at 20 GB/day, and the request that trips it arrives as an
   ordinary `HTTP 400` with an upsell body — it looks like a bad file but is a fact
-  about the account. The tool names that error, ends the run on the first one, and
-  gives back the attempt the file had just spent, so the next run has its full budget.
-  Re-run the same command later: an hour is enough to be polite, past midnight is
-  enough to be sure.
+  about the account. The tool gives the file's attempt back, releases that account's
+  lock, and tries the next unlocked account. Once all accounts are capped, rerun the
+  same command later.
 - **A refused login is usually your egress address, not your password.** PikPak answers
   `AccessProhibited` (HTTP 400) outright — reproduced on a machine whose direct address
   was refused and which signed in seconds later behind a different exit. Standard
@@ -140,9 +144,8 @@ Measured on a free account, and worth knowing before you plan a large run:
   measured 0.13–0.7 MiB/s over the course of a long run (it drifts down with time of
   day). Four ranged segments measured ~0.25 MiB/s in aggregate, with two of the four
   receiving *nothing* — so segmentation is worth ~1.5× at best and extra lanes are
-  routinely starved. The default is 4 because that still beat one stream in these
-  measurements, but `--connections 1` is the right answer if you would rather be
-  left alone by the CDN.
+  routinely starved. The default is now one stream for reliability; set
+  `--connections 4` explicitly if you want to try segments.
 
 When a round makes no progress, the tool probes the CDN with a one-byte range
 request to tell the two failure modes apart, because the correct reaction is
@@ -170,9 +173,8 @@ for. On top of that the tool deliberately slows itself down:
   captcha tokens;
 - three consecutive throttle-grade failures stop the whole run and tell you to come
   back in an hour, instead of hammering until the account gets flagged;
-- a daily downstream traffic cap stops the run on the first occurrence — no back-off
-  inside a run can clear a limit that resets per day, so retrying file after file
-  would only spend attempts on a wall;
+- a daily downstream traffic cap switches to the next unlocked account; the run stops
+  once no account remains;
 - `--gap` rests 20 s between files, and `--limit` / `--max-files` let you work in
   deliberate batches.
 
@@ -180,10 +182,12 @@ If you are rate limited, lower `--connections` to `1` and raise `--gap`.
 
 ## Deletes
 
-The tool only deletes drive ids that it created itself (tracked in `state.json`,
-seeded on reload for interrupted runs). `--purge-trash` is opt-in precisely because
-emptying the trash is account-wide and cannot be undone; when it runs, the number
-and size of what it is about to remove is logged first.
+Every account uses a dedicated cloud folder named `.pikpakget`. After acquiring the
+library and account locks, an actual download run **permanently deletes everything
+inside that folder** before restoring files. Keep personal files out of it.
+`--dry-run`, `--inventory`, `--status`, and `--doctor` never perform this cleanup.
+The folder remains in place. `--purge-trash` is separately opt-in because it empties
+the account's entire trash.
 
 ## File names
 
@@ -224,8 +228,8 @@ bytes are deleted; until then the record points at both.
 
 ## Security notes
 
-- `~/.pikpakget/` holds your session (`access_token`, single-use rotating
-  `refresh_token`) and is in `.gitignore`; the session file is written `0600`.
+- `~/.pikpakget/accounts/<account ID>/` holds each session (`access_token`,
+  single-use rotating `refresh_token`); session files are written `0600`.
 - Every library keeps its own `state.json` under `<library>/.pikpakget/` — the
   progress journal lists real share URLs, file ids and paths, so that name is ignored at
   every depth by `.gitignore` for the same reason. Never commit one.
@@ -240,10 +244,13 @@ bytes are deleted; until then the record points at both.
 
 ```
 pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash endpoints
+pikpakget/accounts.py  account registry and device-local account locks
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     159 on the pure logic; no account, no network
+tests/test_pure.py     153 on the pure logic; no real account or network
+tests/test_accounts.py   5 synthetic account and lock tests
+tests/test_rotation.py   2 synthetic account rotation tests
 tests/test_transfer.py   5 real transfers over local HTTP, with real curl
 ```
 
