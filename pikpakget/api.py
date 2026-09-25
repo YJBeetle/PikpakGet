@@ -75,6 +75,24 @@ class PikPakError(RuntimeError):
         return f'{super().__str__()} [HTTP {self.status} code={self.code} action={self.action}]'
 
 
+def _safe_body(body):
+    """The server's own answer, minus anything that could be replayed.
+
+    A sign-in refusal is otherwise undiagnosable — `AccessProhibited` alone does not
+    say whether the account, the device fingerprint or the egress address was refused —
+    and the fields that would say so sit next to a live captcha token, which is exactly
+    what a user would paste into a bug report."""
+    kept = {}
+    for key, value in (body or {}).items():
+        if 'token' in key.lower() or key.lower() in ('captcha_vid', 'nonce', 'captcha_sign'):
+            kept[key] = '…省略…'
+        elif isinstance(value, str) and len(value) > 200:
+            kept[key] = value[:200] + '…'
+        else:
+            kept[key] = value
+    return json.dumps(kept, ensure_ascii=False)
+
+
 class TrafficCapped(PikPakError):
     """Today's downstream traffic quota is used up. Backing off for minutes fixes
     nothing — the counter is daily — so the run ends and the same command is re-run
@@ -210,7 +228,7 @@ class Client:
             if body.get('url'):
                 raise PikPakError('登录需要先通过人工验证码（浏览器完成一次后再试）',
                                   status=status, action='signin')
-            raise PikPakError(f'无法取得登录验证码: {body.get("error_description") or body}',
+            raise PikPakError(f'无法取得登录验证码: {_safe_body(body)}',
                               status=status, action='signin')
         status, body = self._raw('POST', signin_url, auth=False, form={
             'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'username': username,
@@ -221,7 +239,17 @@ class Client:
             hint = ''
             if 'verification' in detail.lower():
                 hint = '（若反复出现 verification failed：连错会要求人工校验，请等几分钟再试或先登录一次官方客户端）'
-            raise PikPakError(f'登录失败: {detail}{hint}', status=status, action='signin')
+            elif 'prohibit' in detail.lower():
+                # seen from two causes, neither of them the password: a refused egress
+                # address (fixed by routing that machine out another way) and, less
+                # often, a device fingerprint PikPak has never met. Retrying fixes
+                # neither and is how a soft refusal becomes real risk control.
+                hint = ('（服务端拒绝的是"登录"这个动作本身，不代表密码错。先试换一个出口地址：'
+                        f'API 与分段下载都读 *_proxy 环境变量；或把已登录机器上 '
+                        f'{os.path.join(os.path.dirname(self.session.path), "device_id")} '
+                        '这个设备号复制过来。别连续重试，那可能升级成真风控。）')
+            raise PikPakError(f'登录失败: {detail}{hint}\n服务端原文: {_safe_body(body)}',
+                              status=status, action='signin')
         self.session.store(self._token_record(body))
         self.log('登录成功，会话已保存（文件权限 600）')
         return self.session.data

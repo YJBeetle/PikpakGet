@@ -1623,6 +1623,43 @@ class TestStateKeyCannotHideWork(RunLinkHarness):
                          'https://mypikpak.com/s/EXAMPLEID1')
 
 
+class TestSignInDiagnostics(unittest.TestCase):
+    """A refusal the user cannot read is a refusal they cannot report — and the body
+    that explains it sits next to a live captcha token, which is precisely what would
+    end up pasted into an issue."""
+
+    def setUp(self):
+        from pikpakget.api import Client
+        dirpath = tempfile.mkdtemp()
+        self.client = Client(session_path=os.path.join(dirpath, 'session.json'),
+                             device_id_path=os.path.join(dirpath, 'device_id'))
+
+    def answer(self, captcha, signin):
+        def raw(method, url, **kwargs):
+            return captcha if 'captcha' in url else signin
+        self.client._raw = raw
+
+    def test_the_refusal_quotes_the_server_but_not_the_token(self):
+        from pikpakget.api import PikPakError
+        self.answer((200, {'captcha_token': 'LIVE-TOKEN-VALUE'}),
+                    (400, {'error_description': 'AccessProhibited', 'tip': 'x' * 400}))
+        with self.assertRaises(PikPakError) as caught:
+            self.client.sign_in('user@example.com', 'pw')
+        text = str(caught.exception)
+        self.assertIn('AccessProhibited', text, 'the reason has to survive')
+        self.assertNotIn('LIVE-TOKEN-VALUE', text, 'the captcha token must not')
+        self.assertLess(len(text), 900, 'long server fields must be clamped')
+        self.assertIn('出口地址', text, 'the observed cause belongs in the advice')
+
+    def test_a_captcha_that_never_arrives_is_named_as_such(self):
+        from pikpakget.api import PikPakError
+        self.answer((400, {'error_description': 'shield blocked'}), (200, {}))
+        with self.assertRaises(PikPakError) as caught:
+            self.client.sign_in('user@example.com', 'pw')
+        self.assertIn('无法取得登录验证码', str(caught.exception))
+        self.assertIn('shield blocked', str(caught.exception))
+
+
 class TestSessionVersusOneBadLink(RunLinkHarness):
     """PikPak answers 403 for a dead session and for a share that has been revoked,
     and the two are indistinguishable at the call site. Guessing "dead session" on
