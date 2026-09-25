@@ -57,6 +57,7 @@ class TestRealTransfer(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
+        cls.server.server_close()          # shutdown stops accepting; this closes the fd
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
