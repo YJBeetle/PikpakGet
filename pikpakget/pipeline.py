@@ -337,6 +337,11 @@ class Pipeline:
     def wait_space_freed(self, expect_drop, before=None, timeout=150):
         """The server is seconds behind `batchDelete`, and until the bytes come
         back the next restore will not fit."""
+        if before is not None and before < expect_drop:
+            # The just-restored copy was not yet reflected in the quota reading.
+            # Subtracting its size from that stale baseline would demand that
+            # unrelated cloud files disappear, which can never happen here.
+            return self.space()
         floor = max((before or 0) - expect_drop, 0)
         # accept a near-miss: an unrelated copy parked in the drive (an interrupted
         # file that a later pass will reuse) keeps the absolute figure from ever

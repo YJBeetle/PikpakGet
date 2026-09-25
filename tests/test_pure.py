@@ -1850,6 +1850,11 @@ class TestQuotaWait(unittest.TestCase):
         space = self.pipeline.wait_space_freed(dropped, before, timeout=1)
         self.assertEqual(space['usage'], 1_727_000_000)
 
+    def test_copy_missing_from_baseline_does_not_wait_for_unrelated_files(self):
+        self.feed([126_200_000])
+        space = self.pipeline.wait_space_freed(126_900_000, 126_200_000, timeout=1)
+        self.assertEqual(space['usage'], 126_200_000)
+
     def test_a_real_stall_still_times_out(self):
         self.feed([4_000_000_000, 4_000_000_000])
         space = self.pipeline.wait_space_freed(399_000_000, 4_400_000_000, timeout=1)

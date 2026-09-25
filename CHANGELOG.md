@@ -4,6 +4,7 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Avoid a 150-second quota wait when a newly restored file was not yet included in the cloud usage reading before deletion.
 - At download startup, offer to clear leftover items in the selected account's `Pack From Shared` folder, with explicit confirmation.
 - Respond to Ctrl+C during the between-file delay without starting another restore. Keep the current cloud copy and `.part` on an interrupted transfer, and skip quota polling and end-of-round cloud requests while exiting.
 - Report `--status` against the last full share inventory instead of only the file records written so far; find `.part` downloads inside nested folders. Make `--doctor` inspect `Pack From Shared` and describe the on-demand cleanup rule.
