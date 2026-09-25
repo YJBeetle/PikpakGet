@@ -1222,6 +1222,17 @@ class TestShareLocalHierarchy(RunLinkHarness):
         self.assertTrue(os.path.isfile(os.path.join(self.lib, 'Series', 'two.mp4')))
         self.assertFalse(os.path.isdir(os.path.join(self.lib, 'Series', 'one.mp4')))
 
+    def test_root_file_and_root_folder_keep_their_separate_positions(self):
+        folders = [self.folder('Selected folder', 'D1')]
+        files = [self.file('beside.mp4', 'F1'),
+                 self.file('inside.mp4', 'F2', 'D1', 'Selected folder/inside.mp4')]
+        self.inventory_with(files, folders, title='beside.mp4')
+        self.assertEqual(self.pipeline.run_link(self.job()), 'ok')
+        base = os.path.join(self.lib, 'Series')
+        self.assertTrue(os.path.isfile(os.path.join(base, 'beside.mp4')))
+        self.assertTrue(os.path.isfile(os.path.join(base, 'Selected folder', 'inside.mp4')))
+        self.assertFalse(os.path.exists(os.path.join(base, 'Selected folder', 'beside.mp4')))
+
     def test_completed_flat_file_is_moved_into_its_share_folder(self):
         from pikpakget.pipeline import job_key
         job = self.job()
