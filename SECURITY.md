@@ -1,45 +1,25 @@
-# Security policy
+# Security
 
-## What is sensitive on your machine
+## Protect local data
 
-Credentials live in the device's `~/.pikpakget/`; each library keeps progress in
-`<library>/.pikpakget/`. Both directory names are covered by `.gitignore`:
+| Path | Contents |
+|---|---|
+| `~/.pikpakget/accounts/<account ID>/session.json` | Access and refresh tokens. Anyone with these may be able to use the account. |
+| `~/.pikpakget/accounts/<account ID>/device_id` | The device ID sent with that account's requests. It is not a password. |
+| `~/.pikpakget/accounts.json` | Account labels and selection order. |
+| `<library>/.pikpakget/state.json` | Share links, filenames, local paths, and progress. |
+| `<library>/.pikpakget/grab-*.log` | Output from the run, including share links and filenames. |
 
-| file | what it holds | why it matters |
-|---|---|---|
-| `accounts/<account ID>/session.json` | `access_token`, the single-use rotating `refresh_token`, user id | written with `0600`; a refresh token is enough to act as you |
-| `accounts.json` | account labels and rotation order | no passwords or tokens, but labels may identify you |
-| `accounts/<account ID>/device_id` | that account's device fingerprint sent with its requests | not a secret, but replacing it changes how the account looks to PikPak |
-| `grab-<date>.log` | every line printed: **share URLs and downloaded filenames** | this is the file people accidentally paste |
-| `state.json` | the same, plus per-file progress and local paths | ditto |
+Sessions and device IDs are written with `0600` permissions. Library progress and log files currently use the process's default permissions; use a restrictive `umask` or protect the library directory if other local users must not read them. Do not attach raw session, state, or log files to an issue; remove identifying links, paths, and tokens first. A simple URL replacement is not enough to sanitize an entire log.
 
-**Before attaching any log or state file to a bug report, remove the identifying
-lines** — share URLs and filenames name other people's libraries, and yours:
+The constants named `CLIENT_ID` and `CLIENT_SECRET` in `pikpakget/api.py` identify the application, not your account. Your account credentials are the password you enter at login and the tokens saved in `session.json`.
 
-```sh
-sed -E 's#(mypikpak\.(com|net)/s/)[A-Za-z0-9_-]{6,}#\1<REDACTED>#g; s#/[^ ]*/<[^ ]*\.mp4>#<PATH>/<REDACTED>.mp4#g' \
-  <library>/.pikpakget/grab-*.log > /tmp/redacted.log
-```
+## Cloud deletion
 
-Do not put your session file anywhere near an issue. If a bug can only be reproduced
-with it, say so and we will work through a private channel.
+An actual download run permanently deletes **all contents** of the selected account's cloud root `.pikpakget` folder before restoring files. Keep personal files out of that folder. `--purge-trash` is an additional option that can empty the account's entire trash.
 
-## What is *not* a secret here
+Account locks only protect processes on the same computer. Do not run separate installations against the same account's `.pikpakget` folder at the same time.
 
-`pikpakget/api.py` contains a client id and client secret. They are the constants
-PikPak's own desktop application ships with and sends on every request — reproducing
-them is what makes the public REST API reachable at all, and revoking them would break
-every legitimate client, so they are not user credentials and reporting them is not a
-vulnerability. User credentials are the tokens in the table above, which never leave
-your machine.
+## Report a vulnerability
 
-The tool deliberately mimics the desktop client (headers, client version, captcha
-signature). That is a documented compatibility choice, not an exploit: it holds no
-account, no quota and no rate limit that the official client does not.
-
-## Reporting a vulnerability
-
-Open a [GitHub issue](https://github.com/YJBeetle/PikpakGet/issues) asking for a
-private channel, or use private vulnerability reporting from the repository's Security
-tab. Versions below 0.1.x are pre-release; the CLI and state format are not frozen yet,
-so please include `pikpakget --version` and what you ran.
+Use the repository's [private vulnerability reporting](https://github.com/YJBeetle/PikpakGet/security/advisories/new), or open an [issue](https://github.com/YJBeetle/PikpakGet/issues) asking for a private contact method. Include the version and a description of the behavior without posting credentials, share links, or raw logs.

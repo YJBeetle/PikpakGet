@@ -1,81 +1,40 @@
-# tg_export — 从聊天记录导出到"可下载清单"
+# Telegram 导出整理工具
 
-这里的东西**不参与下载**，只是把一份 Telegram 聊天导出整理成"每个链接一行、按作者/系列归组"
-的目录，再从中生成 `链接<TAB>目标文件夹` 的清单喂给上层的 `pikpakget`。放一个独立目录是
-因为文件不止一个，而且它们的关注点和下载器完全不同：这里处理的是**元数据**，那里处理的是
-**字节**。
+这里的两个脚本只整理链接，不下载文件。先从 Telegram 的 HTML 聊天导出中提取 PikPak 链接、去重并分组，再生成 PikpakGet 能读取的 `链接<TAB>本地文件夹` 清单。
 
-| 文件 | 作用 |
-|---|---|
-| `cluster.py` | 解析 Telegram「导出聊天记录（HTML）」的 `messages*.html`，按链接去重，再以渠道自己的 hashtag 分组，写出两个 CSV |
-| `make_links.py` | 从目录里挑分组，生成 `链接<TAB>目标文件夹` 的下载清单 |
-| `vocabulary.example.csv` | 词表的**格式示例**，全是合成名 |
-| `vocabulary.csv` | 你自己的词表。默认从脚本同目录读，**已 gitignore**：里面是某人的目录内容（真实系列名、他家的标签体系），不是这个工具的一部分 |
+## 使用
 
-## 词表
-
-代码里只留**与内容无关的格式规则**（HTML 解析、日期前缀、`【品牌】`、`第N部`、
-`等5个文件` 这类中文计数模式）。凡是"看懂这个渠道在卖什么"才写得出来的东西，全在
-`vocabulary.csv` 里，三列 `kind,name,value`：
-
-| kind | 作用 | 缺它会怎样 |
-|---|---|---|
-| `alias` | 名称合并：错别字、`X工作室` vs `X` | 变体各成一组 |
-| `tag` | 内容标签（`内容标签` 那一列） | 该列全空 |
-| `list` | `non_author_tags`：是题材不是作者的词，不能当分组名 | 题材词会抢走组名 |
-| `rule` | `suffix_root`（剥掉的后缀）、`directory_hints`（顶层大文件夹的暗示）、`unnumbered`、`generic_batch` | 合并与兜底判断失效 |
-| `bucket` | 三个兜底桶的显示名 | 用中性的内置名（`大合集`/`未归类散更`/`未识别归属`） |
-
-没有 `vocabulary.csv` 也能跑：解析、去重、hashtag 归组照常，只是不做名称合并，
-脚本会明确打印"没有名称合并"，不会静默退化。
-
-## 用法
-
-在哪个目录跑，产物就落在那个目录，不套子目录；导出目录是第一个位置参数，脚本不猜也不扫。
-两个脚本的默认名互相咬合（上一步写 `pikpak_links_dedup.csv`，
-下一步默认就读它）。
+在希望存放结果的目录中运行：
 
 ```bash
-# 1) 解析 + 去重 + 分组 -> ./pikpak_links_dedup.csv、./pikpak_clusters.csv
-python3 <仓库>/utils/tg_export/cluster.py ./ChatExport_XXX
+# 1. 解析导出的 messages*.html
+python3 /path/to/PikpakGet/utils/tg_export/cluster.py /path/to/ChatExport
 
-# 2) 不带参数列出全部分组，再按名称生成一份下载清单
-python3 <仓库>/utils/tg_export/make_links.py
-python3 <仓库>/utils/tg_export/make_links.py '系列甲' '系列乙'  # 系列甲+系列乙.txt
+# 2. 查看分组，再选择要下载的分组
+python3 /path/to/PikpakGet/utils/tg_export/make_links.py
+python3 /path/to/PikpakGet/utils/tg_export/make_links.py C001 C002 -o links.txt
 
-# 也可以用列表中的编号，适合名称重复的情况
-python3 <仓库>/utils/tg_export/make_links.py C002 C004  # C002+C004.txt
-
-# 或把所有分组生成一份清单
-python3 <仓库>/utils/tg_export/make_links.py all  # all.txt
-
-# 自己指定清单文件名时用 -o
-python3 <仓库>/utils/tg_export/make_links.py C002 C004 -o 第一批.txt
-
-# 3) 交给下载器
-python3 -m pikpakget 第一批.txt --dest <库目录>
+# 3. 开始下载
+python3 -m pikpakget links.txt --dest /path/to/library
 ```
 
-“分组”是脚本根据标签和名称归在一起的链接：多数对应作者或系列，也包含“未编号散更合集”等兜底组。
-`make_links.py` 固定读取当前目录的 `pikpak_links_dedup.csv`。分组名需与列表显示的完整名称一致；
-每个名称分别用引号包住，尤其是含空格或括号时。名称重复时改用 `C001` 这样的分组编号。
-`list` 等同于不带参数，`all` 把全部分组放入**同一份**清单。省略 `-o` 时，
-`all` 写 `all.txt`，其余按输入顺序用 `+` 拼文件名；名称里的 `/` 会改成全角 `／`。
-再次生成同名清单会覆盖旧文件。每条链接仍落到 CSV 对应的分组文件夹。
+`cluster.py` 默认在当前目录生成：
 
-## 输出
+- `pikpak_links_dedup.csv`：去重后的链接及其分组、出现次数、时间等信息。
+- `pikpak_clusters.csv`：各分组的链接数量和统计信息。
 
-- `<out-dir>/pikpak_links_dedup.csv` — 一个唯一链接一行：分组名称、链接、出现次数、首次/末次
-  时间、跨度、类型、消息 ID
-- `<out-dir>/pikpak_clusters.csv` — 一个作者/系列一行：链接数、占比、更新区间、类型分布
+`make_links.py` 从当前目录的 `pikpak_links_dedup.csv` 读取数据。不带参数时列出分组；可用完整分组名或列表中的 `C001` 等编号选择分组。`all` 会把所有分组写入一份 `all.txt`，`-o FILE` 可指定输出文件。生成同名文件会覆盖原文件。
 
-## 分组规则（为什么不是“每个文件名一组”）
+## 可选词表
 
-- **词表来自渠道自己的 hashtag**（`ShowHashtag`），所以组数是有限的、和人工整理一致；
-- 名称里的 `整理1 / 编号 / 新增+3 / 2024` 这类是**更新标注**，会被剥掉，同一个作者的不同标注合并；
-- 括号里的限定语（题材备注之类）从分组键里剥掉，但仍保留在展示名里；
-- 只有标注、没署名的日常散更包、顶层大文件夹，各归进一个兜底桶（桶名是词表里的
-  `bucket` 行）—— 它们不该各占一组把目录打散；
-- 一个链接被反复转发（实测最多 42 次）只留一行，但保留首次/末次时间与每次的标注。
+`cluster.py` 默认读取脚本旁边的 `vocabulary.csv`。没有这个文件也能解析、去重和按标签分组；名称合并及部分分类规则会减少。复制 `vocabulary.example.csv` 可查看三列格式：`kind,name,value`。
 
-数据留在你自己的目录里，这个文件夹不带任何真实链接或系列名。
+| `kind` | 用途 |
+|---|---|
+| `alias` | 合并同一名称的不同写法 |
+| `tag` | 标记内容类别 |
+| `list` | 指定不应当作作者名的词 |
+| `rule` | 调整名称清理与分组规则 |
+| `bucket` | 命名未识别或混合内容的分组 |
+
+词表和生成的 CSV 可能包含私人聊天内容、真实链接或系列名，分享之前请检查。运行 `python3 cluster.py --help` 和 `python3 make_links.py --help` 可查看完整参数。
