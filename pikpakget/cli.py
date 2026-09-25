@@ -147,7 +147,7 @@ def main(argv=None):
         return 0
     if args.logout:
         client.session.forget()
-        log('已删除本地会话')
+        log(f'已删除本地会话（{os.path.join(args.state_dir, "session.json")}）')
         return 0
 
     pipeline = Pipeline(args, log, stop=lambda: STOP)

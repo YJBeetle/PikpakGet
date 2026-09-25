@@ -1028,7 +1028,8 @@ class Pipeline:
                               '设置，只读环境变量；被 PikPak 按地址拒绝时看这里）')
         session = self.client.session
         if not session.access_token:
-            check('会话', 'FAIL', '还没有登录：先运行 --login <邮箱>')
+            check('会话', 'FAIL', f'还没有登录：{self.client.session.path} 里没有会话'
+                  f'（`--login` 要带同一个 --state-dir）')
             return self._doctor_verdict(rows)
         minutes = int(session.expires_in() // 60)
         check('会话', 'ok' if session.data.get('refresh_token') else 'warn',

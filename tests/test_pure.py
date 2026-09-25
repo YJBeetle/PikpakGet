@@ -575,10 +575,12 @@ class TestDoctor(RunLinkHarness):
         import types
         self.stub_client()
         self.pipeline.client.session = types.SimpleNamespace(
-            access_token=None, user_id=None, data={}, expires_in=lambda: 0)
+            access_token=None, user_id=None, data={}, expires_in=lambda: 0,
+            path='/tmp/nowhere/session.json')
         code, output = self.run_doctor()
         self.assertEqual(code, 1)
         self.assertIn('--login', output)
+        self.assertIn('session.json', output, 'the message has to name the file it looked in')
 
     def test_a_missing_curl_blocks_segmentation(self):
         import types

@@ -251,7 +251,10 @@ class Client:
             raise PikPakError(f'登录失败: {detail}{hint}\n服务端原文: {_safe_body(body)}',
                               status=status, action='signin')
         self.session.store(self._token_record(body))
-        self.log('登录成功，会话已保存（文件权限 600）')
+        # the path belongs in the message: `--login` without `--state-dir` writes to
+        # the default directory, and a later run that does pass one finds no session
+        # there and reads as "the login dropped"
+        self.log(f'登录成功，会话已保存到 {self.session.path}（权限 600）')
         return self.session.data
 
     @staticmethod
@@ -281,7 +284,9 @@ class Client:
 
     def ensure_session(self, force=False):
         if not self.session.access_token:
-            raise PikPakError('还没有登录：先运行 `--login <邮箱>`', action='session')
+            raise PikPakError(f'还没有登录（会话文件 {self.session.path} 不存在或没有 '
+                             f'access_token）：先运行 `--login <邮箱>`，注意它的 '
+                             f'--state-dir 要和这里一致', action='session')
         if force or not self.session.valid(TOKEN_REFRESH_MARGIN):
             self.refresh()
         return self.session.access_token
