@@ -11,7 +11,6 @@ mutating call carries a short-lived shield `captcha_token` minted locally.
 import json
 import os
 import re
-import sys
 import time
 import urllib.error
 import urllib.parse

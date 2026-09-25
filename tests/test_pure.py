@@ -10,7 +10,7 @@ import unittest
 import argparse
 
 from pikpakget.api import captcha_sign, parse_share_url
-from pikpakget.pipeline import (AUTH_STOP, STATE_VERSION, State, human, load_folder_map,
+from pikpakget.pipeline import (AUTH_STOP, State, human, load_folder_map,
                                 read_links, safe_name)
 from pikpakget.stream import plan_segments
 
