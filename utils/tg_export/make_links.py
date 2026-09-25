@@ -24,17 +24,14 @@ def load(path):
     if not os.path.exists(path):
         raise SystemExit(f'找不到聚类结果 {path}\n'
                          '先生成：python3 utils/tg_export/cluster.py <导出目录>')
-    rows = csv.DictReader(open(path, encoding='utf-8-sig'))
     by_cluster = collections.OrderedDict()
-    for row in rows:
-        cluster = (row.get('聚类名称') or '').strip()
-        url = (row.get('分享链接') or '').strip()
-        if not cluster or not url:
-            continue
-        order = int((row.get('聚类ID') or 'C000')[1:])
-        by_cluster.setdefault(cluster, []).append((order, url, cluster))
-    for items in by_cluster.values():
-        items.sort()
+    with open(path, encoding='utf-8-sig', newline='') as handle:
+        for position, row in enumerate(csv.DictReader(handle)):
+            cluster = (row.get('聚类名称') or '').strip()
+            url = (row.get('分享链接') or '').strip()
+            if not cluster or not url:
+                continue
+            by_cluster.setdefault(cluster, []).append((position, url, cluster))
     return by_cluster
 
 
@@ -64,12 +61,13 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
     by_cluster = load(args.catalogue)
+    missing = [name for name in args.clusters if name not in by_cluster]
+    if missing:
+        parser.error('这些聚类名在目录里不存在：' + '、'.join(missing))
     if args.merged:
         if not args.clusters:
             parser.error('--merged 需要至少一个聚类名')
         items = [item for name in args.clusters for item in by_cluster.get(name, [])]
-        if not items:
-            parser.error('这些聚类名在目录里不存在：' + ' '.join(args.clusters))
         path, count = write_list(args.merged, items, args.out_dir, args.folder)
         print(f'写出 {path}  {count} 条')
         return
@@ -79,9 +77,6 @@ def main():
         ranked = sorted(by_cluster.items(), key=lambda kv: -len(kv[1]))
         print('  ' + '  '.join(f'{name}({len(items)})' for name, items in ranked[:40]))
         return
-    for name in args.clusters:
-        if name not in by_cluster:
-            print(f'跳过未知聚类: {name}')
     for name in names:
         if name in by_cluster:
             path, count = write_list(name, by_cluster[name], args.out_dir, args.folder)

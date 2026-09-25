@@ -11,6 +11,7 @@ gitignored because it is somebody's catalogue.
 import csv
 import collections
 import glob
+import html
 import os
 import re
 import unicodedata
@@ -21,6 +22,8 @@ DIV = re.compile(r'<(/?)div\b[^>]*>')
 DATE = re.compile(r'class="pull_right date details" title="([^"]+)"')
 FROM_NAME = re.compile(r'<div class="from_name">\s*(.*?)\s*</div>', re.S)
 HTTP_URL = re.compile(r'href="(https?://[^"]+)"')
+PIKPAK_URL = re.compile(r'https?://(?:www\.)?mypikpak\.com/s/', re.I)
+ANCHOR = re.compile(r'<a\b([^>]*)>(.*?)</a>', re.S | re.I)
 HASHTAG_ANCHOR = re.compile(r'onclick="return ShowHashtag\(&quot;(.*?)&quot;\)"')
 ENTITIES = [('«', '«'), ('»', '»'), ('&quot;', '"'), ('&#39;', "'"),
             ('&amp;', '&'), ('&lt;', '<'), ('&gt;', '>'), ('&nbsp;', ' ')]
@@ -63,25 +66,35 @@ def parse_datetime(raw):
 def link_segments(raw_text):
     """Yield (url, label) for every http link, label being the trailing lines
     up to the next link so multi-link summary posts stay attributed."""
-    lines = []          # [(kind, value)]
-    for line in strip_tags(raw_text).split('\n'):
-        line = line.strip()
-        if line:
-            lines.append(line)
-    urls = HTTP_URL.findall(raw_text)
-    if len(urls) <= 1:
-        label_lines = [l for l in lines if not l.startswith('http')
-                       and 'PikPak App' not in l]
-        return [(u, ' '.join(label_lines)) for u in urls]
-    # multi-link: walk the plain lines, a link line starts a new segment
+    urls = []
+
+    def mark_link(match):
+        found = HTTP_URL.search(match.group(1))
+        if not found:
+            return match.group(0)
+        url = html.unescape(found.group(1))
+        if not PIKPAK_URL.match(url):
+            return match.group(0)
+        marker = f'\x00LINK{len(urls)}\x00'
+        urls.append(url)
+        visible = strip_tags(match.group(2)).strip()
+        label = '' if visible.startswith('http') else visible
+        return f'\n{marker}\n{label}\n'
+
+    marked = ANCHOR.sub(mark_link, raw_text)
+    lines = [line.strip() for line in strip_tags(marked).split('\n') if line.strip()]
+    if len(urls) == 1:
+        label_lines = [line for line in lines if not line.startswith('http')
+                       and not line.startswith('\x00LINK') and 'PikPak App' not in line]
+        return [(urls[0], ' '.join(label_lines))]
+    # Anchor positions identify boundaries even when the displayed text is a title.
     segments = []
     current = None
     for line in lines:
-        hit = [u for u in urls if line.startswith(u)]
-        if hit:
+        if line.startswith('\x00LINK'):
             if current:
                 segments.append(current)
-            current = [hit[0], []]
+            current = [urls[int(line[5:-1])], []]
         elif current is not None and 'PikPak App' not in line:
             current[1].append(line)
     if current:
@@ -92,7 +105,8 @@ def link_segments(raw_text):
 def load_records(export_dir):
     records = []
     for path in sorted(glob.glob(f'{export_dir}/messages*.html')):
-        html_text = open(path, encoding='utf-8').read()
+        with open(path, encoding='utf-8') as handle:
+            html_text = handle.read()
         for block in message_blocks(html_text):
             if 'message default' not in block[:60]:
                 continue
@@ -331,7 +345,8 @@ def main(export_dir, out_dir, vocab_path):
     vocabulary = build_vocabulary(records)
     rows = []
     for url, occ in by_url.items():
-        occ.sort(key=lambda r: r['stamp'])
+        occ.sort(key=lambda r: r['stamp'] or datetime.min)
+        dated = [rec['stamp'] for rec in occ if rec['stamp'] is not None]
         primary, batch_members = url_names(occ, vocabulary)
         notes = [n for n in (clean_label(r['label']) for r in occ) if n]
         primary = primary or (clean_label(occ[0]['label']) or '(未标注)')
@@ -347,9 +362,9 @@ def main(export_dir, out_dir, vocab_path):
             '内容标签': ';'.join(tags_of(blob)),
             '关联系列': ';'.join(name for name, _ in batch_members.most_common(8)),
             '出现次数': len(occ),
-            '首次时间': occ[0]['stamp'],
-            '末次时间': occ[-1]['stamp'],
-            '跨度天数': (occ[-1]['stamp'] - occ[0]['stamp']).days,
+            '首次时间': min(dated) if dated else None,
+            '末次时间': max(dated) if dated else None,
+            '跨度天数': (max(dated) - min(dated)).days if dated else '',
             '消息ID': ';'.join(str(r['message_id']) for r in occ[:25]),
             '导出文件': ';'.join(sorted({r['file'] for r in occ})),
         })
@@ -361,7 +376,7 @@ def main(export_dir, out_dir, vocab_path):
                      key=lambda kv: (-len(kv[1]), -sum(r['出现次数'] for r in kv[1]), kv[0][0]))
     final = []
     for cid, (root, members) in enumerate(ordered, 1):
-        members.sort(key=lambda r: (r['首次时间'], r['分享ID']))
+        members.sort(key=lambda r: (r['首次时间'] or datetime.max, r['分享ID']))
         names = collections.Counter(m['聚类名称'] for m in members)
         display = vocabulary.get(root) or min(
             names, key=lambda n: (-names[n], bool(re.search(r'\d', n)), len(n)))
@@ -383,7 +398,7 @@ def main(export_dir, out_dir, vocab_path):
         for row in final:
             out = dict(row)
             for key in ('首次时间', '末次时间'):
-                out[key] = out[key].strftime('%Y-%m-%d %H:%M')
+                out[key] = out[key].strftime('%Y-%m-%d %H:%M') if out[key] else ''
             writer.writerow(out)
 
     summary_csv = f'{out_dir}/pikpak_clusters.csv'
@@ -398,8 +413,12 @@ def main(export_dir, out_dir, vocab_path):
             writer.writerow([
                 f'C{cid:03d}', display, len(members), f'{len(members)/len(rows):.1%}',
                 sum(m['出现次数'] for m in members),
-                min(m['首次时间'] for m in members).strftime('%Y-%m-%d'),
-                max(m['末次时间'] for m in members).strftime('%Y-%m-%d'),
+                min((m['首次时间'] for m in members if m['首次时间']),
+                    default=None).strftime('%Y-%m-%d')
+                if any(m['首次时间'] for m in members) else '',
+                max((m['末次时间'] for m in members if m['末次时间']),
+                    default=None).strftime('%Y-%m-%d')
+                if any(m['末次时间'] for m in members) else '',
                 ';'.join(f'{k}x{v}' for k, v in types.most_common()),
                 ';'.join(k for k, _ in tags.most_common(6)),
             ])

@@ -7,8 +7,6 @@ rule,suffix_root,(原创|工作室|出品|studio|club)$
 rule,directory_hints,总目录|合集\d|大文件夹
 rule,unnumbered,未编号|未分类
 rule,generic_batch,^(?:更新|新增)?[零一二三四五六七八九十\d]{1,4}[个部]?(?:视频|文件)?
-rule,unnumbered,未编号|未分类
-rule,generic_batch,^(?:更新|新增)?[零一二三四五六七八九十\d]{1,4}[个部]
 bucket,directory_group,总目录(大合集)
 bucket,unnumbered_group,未编号散更合集
 bucket,unknown_group,未识别归属(散资源)
