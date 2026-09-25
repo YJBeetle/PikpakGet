@@ -21,5 +21,8 @@ jobs:
         run: |
           pip install -q -e .
           pikpakget --version
-      # the suite is pure logic: no account, no network, no fixtures to leak
-      - run: python -m unittest discover -s tests -t . -v
+      # -W error::ResourceWarning is not decoration: the log-handle leak that got
+      # shipped on 2026-09-25 was invisible to the plain run (CI showed zero
+      # warnings) and turned a test red locally. The published gate has to be at
+      # least as strict as the one the developer actually runs.
+      - run: python -W error::ResourceWarning -m unittest discover -s tests -t . -v
