@@ -1018,6 +1018,14 @@ class Pipeline:
                         check('并发实例', 'warn', '已有实例持有锁：同一 state 目录不要并发跑')
                     else:
                         check('并发实例', 'ok', '没有其他实例持有锁（探测完已释放）')
+        proxies = {key: value for key, value in os.environ.items() if 'proxy' in key.lower()}
+        if proxies:
+            check('出口', 'ok', '、'.join(f'{key}={value}' for key, value in sorted(proxies.items())))
+        else:
+            # observed: a login worked only after the user exported *_proxy by hand —
+            # neither urllib nor curl reads a system or desktop proxy configuration
+            check('出口', 'note', '无 *_proxy 环境变量（urllib 与 curl 都不读系统/桌面代理'
+                              '设置，只读环境变量；被 PikPak 按地址拒绝时看这里）')
         session = self.client.session
         if not session.access_token:
             check('会话', 'FAIL', '还没有登录：先运行 --login <邮箱>')

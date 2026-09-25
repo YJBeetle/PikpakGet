@@ -123,7 +123,9 @@ Measured on a free account, and worth knowing before you plan a large run:
   `AccessProhibited` (HTTP 400) outright — reproduced on a machine whose direct address
   was refused and which signed in seconds later behind a different exit. Standard
   `*_proxy` environment variables are honoured by both halves of the tool (the API over
-  `urllib`, the segments over `curl`), and a proxied transfer counts against the same
+  `urllib`, the segments over `curl`) — but a *system* or desktop proxy setting is read
+  by neither, which is why the same machine can browse fine and get refused here.
+  `--doctor` prints which is in effect, and a proxied transfer counts against the same
   daily cap.
 - **Throughput is shaped per account, not per connection.** A single connection
   measured 0.13–0.7 MiB/s over the course of a long run (it drifts down with time of
@@ -229,7 +231,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     145 on the pure logic; no account, no network
+tests/test_pure.py     146 on the pure logic; no account, no network
 tests/test_transfer.py   5 real transfers over local HTTP, with real curl
 ```
 

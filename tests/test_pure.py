@@ -592,6 +592,19 @@ class TestDoctor(RunLinkHarness):
         self.assertEqual(code, 1)
         self.assertIn('curl', output)
 
+    def test_the_proxy_line_says_what_a_desktop_proxy_would_not(self):
+        import unittest.mock
+        self.stub_client()
+        environment = dict(os.environ)
+        environment.pop('HTTPS_PROXY', None)
+        environment.pop('https_proxy', None)
+        with unittest.mock.patch.dict(os.environ, environment, clear=True):
+            _, output = self.run_doctor()
+        self.assertIn('不读系统/桌面代理', output)
+        with unittest.mock.patch.dict(os.environ, {'HTTPS_PROXY': 'http://127.0.0.1:7890'}):
+            _, output = self.run_doctor()
+        self.assertIn('127.0.0.1:7890', output)
+
     def test_a_stranger_on_the_drive_is_only_a_warning(self):
         self.stub_client(list_folder=lambda parent='*': [
             {'kind': 'drive#file', 'id': 'SOMEONE_ELSE', 'size': '1600000000'}])

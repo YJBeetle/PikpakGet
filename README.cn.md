@@ -107,8 +107,9 @@ python3 -m pikpakget links.txt --max-files 5   # 先试一小口
   时预算是满的。稍后再跑同一条命令即可：隔一小时算客气，过了零点算稳妥。
 - **登录被拒通常是出口地址的问题，不是密码。** PikPak 会直接回 `AccessProhibited`
   （HTTP 400）—— 实测有一台机器直连地址被拒，换到另一个出口几秒后就登录成功。标准
-  `*_proxy` 环境变量两半都吃（API 走 `urllib`、分段走 `curl`），但走代理下载的字节
-  同样计入那个每日上限。
+  `*_proxy` 环境变量两半都吃（API 走 `urllib`、分段走 `curl`）—— 但**系统级/桌面代理
+  设置两边都不读**，所以同一台机器"浏览器能开、这里被拒"是完全可能的。`--doctor` 会把
+  当前实际生效的情况打出来；走代理下载的字节同样计入那个每日上限。
 - **限速是账号级的，不是连接级的。** 长时间跑下来，单连接实测 0.13–0.7 MB/s（会随
   时段下滑）。4 条分段合计只有约 0.25 MiB/s，而且 4 段里有 2 段**一个字节都没拿到**
   —— 也就是说分段最多带来约 1.5× 收益，多余的通道会被饿死。默认仍是 4（因为这些
@@ -197,7 +198,7 @@ pikpakget/api.py       HTTP 客户端：会话、验证码签名、分享/云盘
 pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
-tests/test_pure.py     145 项纯逻辑测试；不涉及账号、不联网
+tests/test_pure.py     146 项纯逻辑测试；不涉及账号、不联网
 tests/test_transfer.py   5 项真下载测试：本地 HTTP + 真 curl
 ```
 
