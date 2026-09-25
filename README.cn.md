@@ -229,6 +229,8 @@ python3 -m unittest discover -s tests -t . -v
 - **长期稳定性未证实。** 多天运行是设计目标、续传路径有日志保障，但第一次真实的多日
   任务正在进行中。
 - **上面的速度数字只是某个晚上的观测**，随时段漂移，请当成量级而不是容量。
+- **贴日志前先脱敏。** `grab-*.log` 与 `state.json` 里有你的分享链接和下载文件名，
+  `session.json` 里是令牌；`SECURITY.md` 给了一行清理命令，也说明了哪些东西是刻意公开的。
 - **没发到 PyPI。** 每个 release 都会把打好的 wheel 与 sdist 挂到自己的资产上（见
   `.github/workflows/release-assets.yml`），`pip install <资产地址>` 即可；从克隆装是
   `pip install -e .`。

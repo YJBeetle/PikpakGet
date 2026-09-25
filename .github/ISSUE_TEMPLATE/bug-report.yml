@@ -1,0 +1,50 @@
+name: Bug report
+about: Something did not download, resume, verify, or exit the way the README says it should
+labels: bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before you paste anything:** `grab-*.log` and `state.json` contain your share
+        links and the filenames you downloaded. Redact them (`sed` one-liner in
+        SECURITY.md), and never attach `session.json` — it holds your tokens.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: output of `pikpakget --version`
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS and Python, e.g. `Debian 13 / Python 3.13`, and `pikpakget --doctor` output
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: The command you ran
+      description: flags matter (`--connections`, `--dest`, `--state-dir`, `--verify`…)
+      render: sh
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect
+      description: |
+        The last few redacted log lines are worth more than a description. If a file
+        landed but `--verify` rejects it, say so — that is a different bug class from a
+        download that failed.
+    validations:
+      required: true
+  - type: textarea
+    id: state
+    attributes:
+      label: State, if it is implicated
+      description: |
+        Redacted only. Useful shapes: a file recorded as `done` that `--verify` rejects,
+        a `.unverified` copy nobody asked for, `state.json` refusing to load.
+      render: json

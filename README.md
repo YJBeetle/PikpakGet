@@ -267,6 +267,9 @@ Stated plainly, because each one has bitten someone at some point:
   resume path is journalled, but the first real multi-day run is happening right now.
 - **Speed figures here are one evening's observations in binary units (MiB/s)** and drift by time of day;
   treat them as orders of magnitude, not capacity.
+- **Redact before you share a log.** `grab-*.log` and `state.json` contain your share
+  links and downloaded filenames, and `session.json` holds your tokens; `SECURITY.md`
+  has the one-line scrub and says what is deliberately not a secret.
 - **Not published to PyPI.** Every release attaches a built wheel and sdist to
   its own assets (see `.github/workflows/release-assets.yml`), so `pip install
   <release asset url>` works; from a clone it is `pip install -e .`.
