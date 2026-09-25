@@ -223,7 +223,8 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     143 tests on the pure logic; no account, no network
+tests/test_pure.py     143 on the pure logic; no account, no network
+tests/test_transfer.py   5 real transfers over local HTTP, with real curl
 ```
 
 ## Development
@@ -246,10 +247,14 @@ Stated plainly, because each one has bitten someone at some point:
   bytes are never deleted over a guess, but a server-side hash that is simply stale
   costs that bandwidth. TLS covers transit; nothing covers a bad server-side copy that
   hashes to itself.
-- **macOS is the only platform this has been run on.** Linux is expected to work
-  (`fcntl`, `curl`, POSIX paths) but is untested. Windows is not supported: the CLI
-  loads (`--version`, `--help`) and then refuses to start with an explanation, because
-  the single-instance lock is POSIX `fcntl`.
+- **PikPak itself has only been talked to from macOS.** The byte transfer — four
+  ranged `curl` segments, splicing, resume, the overshoot rule, the content hash —
+  is covered by real downloads against a local Range server on every CI run, and CI is
+  Linux (Python 3.10–3.14), so those paths hold on Linux too; but the API side
+  (login, captcha, restore, quota) has only been exercised against the service from
+  macOS. Windows is not supported: the CLI loads (`--version`, `--help`) and then
+  refuses to start with an explanation, because the single-instance lock is POSIX
+  `fcntl`.
 - **The refusal path is untested in the wild.** Dropping to one connection after an
   HTTP 4xx/5xx is covered by unit tests, but everything observed so far was
   starvation (a lane that gets no bytes) rather than refusal, so that reaction is

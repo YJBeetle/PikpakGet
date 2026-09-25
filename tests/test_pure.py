@@ -1834,6 +1834,15 @@ class TestCapDoesNotCondemnTheFile(RunLinkHarness):
         self.assertIn('流量', record['error'])
 
 
+def flatten(suite):
+    """Every leaf test case, however deeply `discover` nested the suites."""
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from flatten(item)
+        else:
+            yield item
+
+
 class TestDocumentedCounts(unittest.TestCase):
     """Both READMEs quote the number of tests, and both went stale silently. Counting
     the suite from inside it keeps the claim tied to the code.
@@ -1845,14 +1854,23 @@ class TestDocumentedCounts(unittest.TestCase):
     def test_both_readmes_quote_the_real_number_of_tests(self):
         import re
         here = os.path.dirname(os.path.abspath(__file__))
-        total = unittest.TestLoader().discover(here, pattern='test_*.py').countTestCases()
-        for name, pattern in (('README.md', r'(\d+) tests on the pure logic'),
-                              ('README.cn.md', r'(\d+) 项纯逻辑测试')):
+        loaded = unittest.TestLoader().discover(here, pattern='test_*.py')
+        counts = collections.Counter()
+        for case in flatten(loaded):
+            counts[case.id().split('.')[0]] += 1
+        self.assertEqual(sum(counts.values()), loaded.countTestCases())
+        claims = {'test_pure': {}, 'test_transfer': {}}
+        for name, key, pattern in (
+                ('README.md', 'test_pure', r'(\d+) on the pure logic'),
+                ('README.cn.md', 'test_pure', r'(\d+) 项纯逻辑测试'),
+                ('README.md', 'test_transfer', r'(\d+) real transfers over local HTTP'),
+                ('README.cn.md', 'test_transfer', r'(\d+) 项真下载测试')):
             with open(os.path.join(here, '..', name), encoding='utf-8') as handle:
                 quoted = re.search(pattern, handle.read())
-            self.assertIsNotNone(quoted, f'{name} 里找不到测试数量的说法')
-            self.assertEqual(int(quoted.group(1)), total,
-                             f'{name} 说 {quoted.group(1)} 项，实际 {total} 项')
+            self.assertIsNotNone(quoted, f'{name} 里找不到"{key}"的测试数量说法')
+            self.assertEqual(int(quoted.group(1)), counts[key],
+                             f'{name} 说 {quoted.group(1)} 项 {key}，实际 {counts[key]} 项')
+            claims[key][name] = int(quoted.group(1))
 
 
 class TestHuman(unittest.TestCase):

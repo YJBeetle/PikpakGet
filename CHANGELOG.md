@@ -6,6 +6,13 @@ line and module APIs may change between releases.
 ## Unreleased
 
 ### Added
+- **Real transfer tests.** The suite had never moved a byte — `download_segments` was
+  exercised only with fake processes, which is how the overshoot bug survived review after
+  review. Five tests now download from a local Range-capable HTTP server with real
+  `curl` and assert byte-for-byte equality for four lanes, single-stream resume, the
+  overshoot-wipe rule, and the content hash (including that a length-preserving shifted
+  middle is rejected). They run in every CI job, i.e. on Linux, so "the transfer path
+  works on Linux" is now evidence rather than an expectation.
 - **`--doctor`**, a preflight for a machine nobody has tested on: the Python floor,
   `curl` (only the segmented path needs it), whether the interpreter allows SHA-1 at all
   (FIPS builds refuse it), the destination and state directories (existence, writability,

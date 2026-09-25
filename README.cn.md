@@ -194,6 +194,7 @@ pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
 tests/test_pure.py     143 项纯逻辑测试；不涉及账号、不联网
+tests/test_transfer.py   5 项真下载测试：本地 HTTP + 真 curl
 ```
 
 ## 开发
@@ -212,9 +213,12 @@ python3 -m unittest discover -s tests -t . -v
   SHA-1 的 SHA-1，分片大小靠候选列表试，而这个列表已经被迫扩过一次）。对不上的文件最多
   重下 3 次，之后改名成 `.unverified` 保留 —— 不会因为一个猜测就删你的字节，但云端 hash
   本身就是旧的时会白烧这 3 次流量。传输有 TLS 保证，服务端那份自洽的坏副本没法防。
-- **只在 macOS 上实际跑过。** Linux 按理可用（`fcntl`、`curl`、POSIX 路径）但没验证
-  过。Windows 不支持：命令行能起来（`--version`、`--help` 可用），但真正的运行会在拿单
-  实例锁之前用一句人话拒绝 —— 那是 POSIX 的 `fcntl`。
+- **对 PikPak 服务本身的调用只在 macOS 上实际跑过。** 字节传输那一层 —— 四段并发
+  `curl`、拼接、续传、越界分段规则、内容 hash —— 有真下载的集成测试兜着，每次 CI 都在
+  Linux（Python 3.10–3.14）上跑一遍，所以这些路径在 Linux 上也成立；但登录、验证码、
+  转存、配额这条链路只从 macOS 打过真实服务。Windows 不支持：命令行能起来
+  （`--version`、`--help` 可用），但真正的运行会在拿单实例锁之前用一句人话拒绝 ——
+  那是 POSIX 的 `fcntl`。
 - **饿死会自动降级。** 连续两个文件的分段只拿到 2xx 却拿不到字节时，本次运行不再
   使用分段 —— 每个文件白等 60+300+900 秒退避，比老实用一条连接下还慢。
 - **"被拒→降级"这条路径还没在真实环境里触发过。** HTTP 4xx/5xx 后降单连接有单测覆盖，
