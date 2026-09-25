@@ -252,6 +252,7 @@ tests/test_pure.py     153 on the pure logic; no real account or network
 tests/test_accounts.py   6 synthetic account and lock tests
 tests/test_rotation.py   2 synthetic account rotation tests
 tests/test_transfer.py   5 real transfers over local HTTP, with real curl
+utils/tg_export/       Telegram export -> dedupe by link -> cluster by author -> link lists
 ```
 
 ## Development

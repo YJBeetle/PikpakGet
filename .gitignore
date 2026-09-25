@@ -1,4 +1,9 @@
 # credentials, progress and logs stay local
+# your own catalogue data and name merges never get committed
+utils/tg_export/vocabulary.csv
+# generated link lists and catalogues hold real share ids
+catalogue/
+
 .pikpakget/
 state/
 session.json

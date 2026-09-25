@@ -217,6 +217,7 @@ tests/test_pure.py     153 项纯逻辑测试；不涉及真实账号、不联�
 tests/test_accounts.py   6 项多账号与锁测试；使用合成账号
 tests/test_rotation.py   2 项账号切换与全部被锁测试；使用合成账号
 tests/test_transfer.py   5 项真下载测试：本地 HTTP + 真 curl
+utils/tg_export/       TG 导出 -> 按链接去重 -> 按作者/系列聚类 -> 生成下载清单
 ```
 
 ## 开发
