@@ -127,20 +127,26 @@ def load_folder_map(path):
     """Optional `url,folder` mapping (CSV or TSV) used when the links file has no
     second column. The header line is skipped if it is not a link."""
     mapping = {}
-    if not path or not os.path.exists(path):
+    if not path:
         return mapping
-    with open(path, encoding='utf-8-sig', newline='') as handle:
-        sample = handle.read(4096)
-        handle.seek(0)
-        delimiter = '\t' if '\t' in sample.splitlines()[0] else ','
-        for row in csv.reader(handle, delimiter=delimiter):
-            if len(row) < 2 or '://' not in row[0]:
-                continue
-            try:
-                share_id, _ = parse_share_url(row[0])
-            except ValueError:
-                continue
-            mapping[share_id] = row[1].strip()
+    try:
+        with open(path, encoding='utf-8-sig', newline='') as handle:
+            sample = handle.read(4096)
+            handle.seek(0)
+            first_line = next((line for line in sample.splitlines() if line.strip()), '')
+            delimiter = '\t' if '\t' in first_line else ','
+            for row in csv.reader(handle, delimiter=delimiter):
+                if len(row) < 2 or '://' not in row[0]:
+                    continue
+                try:
+                    share_id, _ = parse_share_url(row[0])
+                except ValueError:
+                    continue
+                mapping[share_id] = row[1].strip()
+    except OSError as error:
+        raise PikPakError(f'映射文件读不了：{path}（{error}）') from error
+    if not mapping:
+        raise PikPakError(f'映射文件没有可用的 url,folder 记录：{path}')
     return mapping
 
 

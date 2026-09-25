@@ -92,6 +92,18 @@ class TestLinksFile(unittest.TestCase):
         jobs, _ = read_links(links, load_folder_map(mapping))
         self.assertEqual(jobs[0]['folder'], 'MappedName')
 
+    def test_folder_map_skips_blank_lines_before_tsv_header(self):
+        mapping = self.write('\nurl\tfolder\nhttps://mypikpak.com/s/AAA1111111111111111\tSeries\n', '.tsv')
+        self.assertEqual(load_folder_map(mapping)['AAA1111111111111111'], 'Series')
+
+    def test_empty_or_missing_folder_map_has_a_clear_error(self):
+        from pikpakget.api import PikPakError
+        empty = self.write('url,folder\n', '.csv')
+        with self.assertRaisesRegex(PikPakError, '没有可用'):
+            load_folder_map(empty)
+        with self.assertRaisesRegex(PikPakError, '读不了'):
+            load_folder_map(empty + '.missing')
+
     def test_bad_lines_are_reported_not_crashing(self):
         path = self.write('https://mypikpak.com/s/AAA1111111111111111\nnonsense line\n')
         jobs, problems = read_links(path)
