@@ -51,8 +51,12 @@ def build_parser():
                         help='show per-folder progress, measured speed and ETA')
     parser.add_argument('--dest', default=os.path.join(os.getcwd(), 'downloads'),
                         help='root folder; each link lands in <dest>/<folder>/')
-    parser.add_argument('--state-dir', default=os.path.join(os.getcwd(), '.pikpakget'),
-                        help='session, device id, state and lock live here')
+    # home, not the working directory: a state directory that follows `cd` makes a
+    # login from one directory invisible to a run from another, which reads exactly
+    # like lost progress and a dropped session
+    parser.add_argument('--state-dir', default=os.path.join(os.path.expanduser('~'), '.pikpakget'),
+                        help='session, device id, state.json and lock live here '
+                             '(default: ~/.pikpakget)')
     parser.add_argument('--folder-map', help='optional CSV/TSV of "url,folder" used when '
                                              'a links file line has no folder column')
     parser.add_argument('--default-folder', default='(unfiled)',
@@ -94,6 +98,17 @@ def build_parser():
     return parser
 
 
+def _warn_about_legacy_state(args, log):
+    """Point at progress left behind by the old cwd-relative default state dir."""
+    legacy = os.path.join('.pikpakget', 'state.json')
+    here = os.path.abspath(os.getcwd())
+    if os.path.abspath(args.state_dir) == os.path.join(here, '.pikpakget'):
+        return                                  # still using the old location on purpose
+    if os.path.exists(legacy) and not os.path.exists(os.path.join(args.state_dir, 'state.json')):
+        log(f'注意到 {legacy} 里有旧的进度，而本次用的是 {args.state_dir}；'
+            '要接着那份进度就加 --state-dir .pikpakget，或者把整个目录挪过去', 'warn')
+
+
 def _acquire_lock(state_dir):
     os.makedirs(state_dir, exist_ok=True)
     handle = open(os.path.join(state_dir, 'grab.lock'), 'w')
@@ -131,6 +146,7 @@ def main(argv=None):
     log = (Log(quiet=args.quiet) if args.doctor or args.log == '-'
            else Log(os.path.join(args.state_dir, f'grab-{time.strftime("%Y-%m-%d")}.log'),
                     args.quiet))
+    _warn_about_legacy_state(args, log)
     try:
         client = Client(session_path=os.path.join(args.state_dir, 'session.json'),
                         device_id_path=os.path.join(args.state_dir, 'device_id'), logger=log)

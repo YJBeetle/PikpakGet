@@ -5,6 +5,15 @@ line and module APIs may change between releases.
 
 ## Unreleased
 
+### Changed
+- **`--state-dir` now defaults to `~/.pikpakget` instead of `./.pikpakget`.** A state
+  directory that follows `cd` means a sign-in from one directory is invisible to a run
+  from another, which reads exactly like "the session dropped" (it was reported that
+  way within minutes of the tool going public). Sessions, device id, `state.json`, the
+  single-instance lock and the default log all move with it. Starting a run next to a
+  repo-local `.pikpakget/state.json` from the old default now says so and names the
+  flag that finds it again, and every session message quotes the file it looked in.
+
 ### Added
 - **Real transfer tests.** The suite had never moved a byte — `download_segments` was
   exercised only with fake processes, which is how the overshoot bug survived review after

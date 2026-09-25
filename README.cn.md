@@ -36,7 +36,7 @@ pip install -e . && pikpakget --help  # 或者装成一个命令行工具
 ## 使用
 
 ```bash
-# 1. 登录一次；会话（可自动续期）保存在 .pikpakget/session.json，权限 600
+# 1. 登录一次；会话（可自动续期）保存在 ~/.pikpakget/session.json，权限 600
 python3 -m pikpakget --login you@example.com
 
 # 2. 可选：先看清这批链接有多大，这一步完全不占云盘空间
@@ -72,10 +72,10 @@ python3 -m pikpakget links.txt --max-files 5   # 先试一小口
 | 参数 | 默认 | 含义 |
 |---|---|---|
 | `--dest DIR` | `./downloads` | 库根目录；每个分组落成 `DIR/<文件夹>/` |
-| `--state-dir DIR` | `./.pikpakget` | 会话、设备号、`state.json`、单实例锁都在这 |
+| `--state-dir DIR` | `~/.pikpakget` | 会话、设备号、`state.json`、单实例锁 —— 跟着用户走，不跟着当前目录走 |
 | `--connections N` | `4` | 单文件用几条分段连接；`1` 就是普通单流下载 |
 | `--gap SEC` | `20` | 文件之间歇一下，压低请求密度 |
-| `--log PATH` | `.pikpakget/grab-<日期>.log` | 传 `-` 表示只输出到终端 |
+| `--log PATH` | `~/.pikpakget/grab-<日期>.log` | 传 `-` 表示只输出到终端 |
 | `--repeat N` | `0`（一轮） | 多轮扫尾，回头补之前失败的；整轮零进展就停 |
 | `--limit N` / `--max-files N` | `0`（不限） | 最多处理 N 个链接 / N 个文件 |
 | `--inventory` | 关 | 只统计每个链接的文件数/字节/最大单文件，不下载 |
@@ -160,9 +160,11 @@ id，你自己放的文件和目录一律不碰（`--no-sweep` 可关闭）。
 
 ## 日志
 
-终端里看到的同样内容会追加到 `.pikpakget/grab-<日期>.log` —— 因为多天的任务活得比
-终端久。`--log -` 可以关掉。`.pikpakget/` 里还有 `state.json`、会话和设备号，整个
-目录已在 `.gitignore` 里。
+终端里看到的同样内容会追加到 `~/.pikpakget/grab-<日期>.log` —— 因为多天的任务活得
+比终端久。`--log -` 可以关掉。这个目录里还有 `state.json`、会话和设备号；它是刻意跟着
+用户走而不是跟着当前目录走的，这样无论从哪个目录启动，进度和登录状态都是同一份。克隆
+目录里现在什么都不写了；`.gitignore` 仍然覆盖旧版本留下的仓库内 `.pikpakget/`，而且
+旁边有那样一份旧进度时，启动会主动说一声。
 
 ## 完整性校验
 
@@ -184,7 +186,7 @@ SHA-1"，切块大小由上传者当时用的客户端决定：26 个文件的�
 
 ## 安全说明
 
-- `.pikpakget/` 存着你的会话（`access_token`、一次一换的 `refresh_token`），已在
+- `~/.pikpakget/` 存着你的会话（`access_token`、一次一换的 `refresh_token`），已在
   `.gitignore` 内，会话文件写成 `0600`；`--logout` 会删掉它。
 - `pikpakget/api.py` 里的 `CLIENT_ID` / `CLIENT_SECRET` 是官方客户端的**公开应用
   常量**（客户端本体和已开源的 SDK 里都带着），不是你的账号凭据。除
@@ -198,7 +200,7 @@ pikpakget/api.py       HTTP 客户端：会话、验证码签名、分享/云盘
 pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
-tests/test_pure.py     146 项纯逻辑测试；不涉及账号、不联网
+tests/test_pure.py     150 项纯逻辑测试；不涉及账号、不联网
 tests/test_transfer.py   5 项真下载测试：本地 HTTP + 真 curl
 ```
 

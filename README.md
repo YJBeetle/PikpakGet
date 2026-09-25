@@ -38,7 +38,7 @@ pip install -e . && pikpakget --help  # or get a console script
 ## Use
 
 ```bash
-# 1. one-time sign-in; stores a refreshable session in .pikpakget/session.json (0600)
+# 1. one-time sign-in; stores a refreshable session in ~/.pikpakget/session.json (0600)
 python3 -m pikpakget --login you@example.com
 
 # 2. optional: see what a link list contains, using zero cloud space
@@ -74,11 +74,11 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 
 | flag | default | meaning |
 |---|---|---|
-| `--dest DIR` | `./downloads` | root of the library; each folder becomes `DIR/<folder>/` |
-| `--state-dir DIR` | `./.pikpakget` | session, device id, `state.json`, single-instance lock |
+| `--dest DIR` | `./downloads` | root of the library; each folder becomes `DIR/<folder>/`. Pass it explicitly: state records absolute paths, so a different cwd splits a library across two places |
+| `--state-dir DIR` | `~/.pikpakget` | session, device id, `state.json`, single-instance lock — it follows the user, not the current directory |
 | `--connections N` | `4` | ranged connections per file; `1` = plain single stream |
 | `--gap SEC` | `20` | rest between files, keeps request density low |
-| `--log PATH` | `.pikpakget/grab-<date>.log` | `-` for stdout only |
+| `--log PATH` | `~/.pikpakget/grab-<date>.log` | `-` for stdout only |
 | `--repeat N` | `0` (one pass) | re-pass the list to finish links that failed transiently; stops when a whole pass lands nothing |
 | `--limit N` / `--max-files N` | `0` (off) | stop after N links / N files |
 | `--inventory` | off | size up every link (count, bytes, largest file), no downloads |
@@ -91,7 +91,6 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | `--folder-map FILE` | none | `url,folder` mapping for lines without a folder column |
 | `--default-folder NAME` | `(unfiled)` | folder for lines that carry no name |
 | `--inventory-out FILE` | `inventory.csv` | where `--inventory` writes |
-| `--log PATH` | `.pikpakget/grab-<date>.log` | `-` for stdout only |
 | `--login USERNAME` / `--password-stdin` | — | sign in once; read the password from stdin instead of a prompt |
 | `--yes` | off | skip unparsable lines in the links file instead of refusing to start |
 | `--quiet` | off | hide info chatter, warnings still shown |
@@ -187,9 +186,12 @@ so a resumed run re-writes the same path instead of creating a second copy.
 ## Logging
 
 The same lines printed to the terminal are appended to
-`.pikpakget/grab-<date>.log`, because a multi-day run outlives the terminal.
-`--log -` disables it. `.pikpakget/` also holds `state.json`, the session and the
-device id, and is gitignored as a whole.
+`~/.pikpakget/grab-<date>.log`, because a multi-day run outlives the terminal.
+`--log -` disables it. That directory also holds `state.json`, the session and the
+device id; it follows the user rather than the working directory on purpose, so
+progress and login are the same no matter where you run from. Nothing is written
+inside a clone any more, though `.gitignore` still covers a repo-local `.pikpakget/`
+left behind by older versions — and starting a run next to one of those says so.
 
 ## Verification
 
@@ -215,7 +217,7 @@ bytes are deleted; until then the record points at both.
 
 ## Security notes
 
-- `.pikpakget/` holds your session (`access_token`, single-use rotating
+- `~/.pikpakget/` holds your session (`access_token`, single-use rotating
   `refresh_token`) and is in `.gitignore`; the session file is written `0600`.
   `--logout` deletes it.
 - `CLIENT_ID` / `CLIENT_SECRET` in `pikpakget/api.py` are the public application
@@ -231,7 +233,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     146 on the pure logic; no account, no network
+tests/test_pure.py     150 on the pure logic; no account, no network
 tests/test_transfer.py   5 real transfers over local HTTP, with real curl
 ```
 

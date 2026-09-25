@@ -477,6 +477,65 @@ class TestPipelineStartup(unittest.TestCase):
         self.assertEqual(pipeline.used_names[key], 'done.mp4')
 
 
+class TestStateFollowsTheUser(unittest.TestCase):
+    """The state directory used to default to `./.pikpakget`, so a login from one
+    directory was invisible to a run from another and read as a dropped session."""
+
+    def test_the_default_state_directory_follows_home_not_cwd(self):
+        import os as os_module
+        import unittest.mock
+        import pikpakget.cli as cli
+        home = tempfile.mkdtemp()
+        elsewhere = tempfile.mkdtemp()
+        original = os.getcwd()
+        os.chdir(elsewhere)
+        self.addCleanup(os.chdir, original)
+        with unittest.mock.patch.dict(os_module.environ, {'HOME': home}):
+            default = cli.build_parser().get_default('state_dir')
+        self.assertEqual(default, os.path.join(home, '.pikpakget'))
+        self.assertFalse(default.startswith(elsewhere))
+
+    def test_progress_in_the_old_place_is_pointed_out(self):
+        import pikpakget.cli as cli
+        captured = []
+        old = tempfile.mkdtemp()
+        os.makedirs(os.path.join(old, '.pikpakget'))
+        with open(os.path.join(old, '.pikpakget', 'state.json'), 'w') as handle:
+            handle.write('{}')
+        elsewhere = tempfile.mkdtemp()
+        original = os.getcwd()
+        os.chdir(old)
+        self.addCleanup(os.chdir, original)
+        args = argparse.Namespace(state_dir=elsewhere)
+        cli._warn_about_legacy_state(args, lambda message, level='info': captured.append(message))
+        self.assertEqual(len(captured), 1, captured)
+        self.assertIn('--state-dir .pikpakget', captured[0])
+
+    def test_no_notice_when_the_old_place_is_the_one_in_use(self):
+        import pikpakget.cli as cli
+        captured = []
+        old = tempfile.mkdtemp()
+        os.makedirs(os.path.join(old, '.pikpakget'))
+        with open(os.path.join(old, '.pikpakget', 'state.json'), 'w') as handle:
+            handle.write('{}')
+        original = os.getcwd()
+        os.chdir(old)
+        self.addCleanup(os.chdir, original)
+        args = argparse.Namespace(state_dir=os.path.join(old, '.pikpakget'))
+        cli._warn_about_legacy_state(args, lambda message, level='info': captured.append(message))
+        self.assertEqual(captured, [])
+
+    def test_no_notice_for_a_brand_new_user(self):
+        import pikpakget.cli as cli
+        captured = []
+        original = os.getcwd()
+        os.chdir(tempfile.mkdtemp())
+        self.addCleanup(os.chdir, original)
+        cli._warn_about_legacy_state(argparse.Namespace(state_dir=tempfile.mkdtemp()),
+                                    lambda message, level='info': captured.append(message))
+        self.assertEqual(captured, [])
+
+
 class TestPreflightSurvivesItsOwnSubject(unittest.TestCase):
     """The first real invocation of `--doctor` on a fresh machine was `--dest
     /volume1/...` on a box with no such path, and the preflight died in a traceback
