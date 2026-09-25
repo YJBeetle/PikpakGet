@@ -5,6 +5,18 @@ line and module APIs may change between releases.
 
 ## Unreleased
 
+### Fixed
+- **Expected failures printed a Python traceback.** `--whoami` with no session, and a
+  refused `--login`, both dumped a stack because only the download path had an error
+  handler. They now print one line to stderr and exit 2; a traceback is reserved for a
+  bug in here. `PikPakError` also stopped claiming `HTTP None code=None` for failures
+  that never sent a request.
+- **A login left in the old state directory was invisible.** The "you have progress
+  next door" notice only looked for `state.json`, so the case that actually happened —
+  a `--login` before the default changed, and every later command reporting "not logged
+  in" — got no hint. It now checks the session and the progress separately and names
+  both files.
+
 ### Changed
 - **`--state-dir` now defaults to `~/.pikpakget` instead of `./.pikpakget`.** A state
   directory that follows `cd` means a sign-in from one directory is invisible to a run

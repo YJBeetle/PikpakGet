@@ -99,14 +99,20 @@ def build_parser():
 
 
 def _warn_about_legacy_state(args, log):
-    """Point at progress left behind by the old cwd-relative default state dir."""
-    legacy = os.path.join('.pikpakget', 'state.json')
+    """Point at a login or progress left behind by the old cwd-relative default.
+
+    Checked per file rather than for `state.json` alone: the case that actually
+    happened was a `--login` from a clone writing `session.json` there, and a later
+    command looking in home and reporting "not logged in" with no hint where the
+    other copy was."""
     here = os.path.abspath(os.getcwd())
     if os.path.abspath(args.state_dir) == os.path.join(here, '.pikpakget'):
         return                                  # still using the old location on purpose
-    if os.path.exists(legacy) and not os.path.exists(os.path.join(args.state_dir, 'state.json')):
-        log(f'注意到 {legacy} 里有旧的进度，而本次用的是 {args.state_dir}；'
-            '要接着那份进度就加 --state-dir .pikpakget，或者把整个目录挪过去', 'warn')
+    for name, what in (('state.json', '下载进度'), ('session.json', '登录会话')):
+        found = os.path.join(here, '.pikpakget', name)
+        if os.path.exists(found) and not os.path.exists(os.path.join(args.state_dir, name)):
+            log(f'注意到 ./.pikpakget/{name} 里有{what}，本次用的 {args.state_dir} 里没有；'
+                '要认那份就加 --state-dir .pikpakget，或者把它挪过去', 'warn')
 
 
 def _acquire_lock(state_dir):
@@ -156,28 +162,34 @@ def main(argv=None):
         # that silently became random would change how the account looks to PikPak
         print(f'状态目录不可用：{args.state_dir}（{error}）', file=sys.stderr)
         return 1 if args.doctor else 2
-    if args.login:
-        password = (sys.stdin.read().strip() if args.password_stdin
-                    else getpass.getpass('PikPak password: '))
-        client.sign_in(args.login, password)
-        return 0
-    if args.logout:
-        client.session.forget()
-        log(f'已删除本地会话（{os.path.join(args.state_dir, "session.json")}）')
-        return 0
-
-    pipeline = Pipeline(args, log, stop=lambda: STOP)
-    if args.doctor:
-        return pipeline.doctor()
-    if args.status_only:
-        return pipeline.status()
-    if args.whoami:
-        about = client.about()
-        space = client.space()
-        slots = client.offline_task_slots()
-        print(f'user_type={about.get("user_type")} 云盘 {space["usage"]}/{space["limit"]} '
-              f'（回收站 {space["in_trash"]}）离线任务位 {slots["usage"]}/{slots["limit"]}')
-        return 0
+    # every command below can fail for reasons that are the user's to act on — no
+    # session, a refused login, a blocked account — and a Python traceback says
+    # nothing more useful than the one line we can print; only a real bug earns one
+    try:
+        if args.login:
+            password = (sys.stdin.read().strip() if args.password_stdin
+                        else getpass.getpass('PikPak password: '))
+            client.sign_in(args.login, password)
+            return 0
+        if args.logout:
+            client.session.forget()
+            log(f'已删除本地会话（{os.path.join(args.state_dir, "session.json")}）')
+            return 0
+        pipeline = Pipeline(args, log, stop=lambda: STOP)
+        if args.doctor:
+            return pipeline.doctor()
+        if args.status_only:
+            return pipeline.status()
+        if args.whoami:
+            about = client.about()
+            space = client.space()
+            slots = client.offline_task_slots()
+            print(f'user_type={about.get("user_type")} 云盘 {space["usage"]}/{space["limit"]} '
+                  f'（回收站 {space["in_trash"]}）离线任务位 {slots["usage"]}/{slots["limit"]}')
+            return 0
+    except PikPakError as error:
+        print(f'错误：{error}', file=sys.stderr)
+        return 2
     if not args.links:
         build_parser().error('a links file is required (or use --login/--whoami/--status)')
 

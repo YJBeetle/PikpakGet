@@ -477,6 +477,51 @@ class TestPipelineStartup(unittest.TestCase):
         self.assertEqual(pipeline.used_names[key], 'done.mp4')
 
 
+class TestErrorsAreReadable(unittest.TestCase):
+    """`--whoami` without a session was a wall of traceback. A refused command is
+    information for the user; only a bug in here is information for me."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def test_a_missing_session_is_one_line_not_a_traceback(self):
+        import contextlib
+        import io
+        import pikpakget.cli as cli
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            code = cli.main(['--whoami', '--state-dir', os.path.join(self.dir, 'nostate'),
+                             '--dest', self.dir])
+        text = buffer.getvalue()
+        self.assertEqual(code, 2)
+        self.assertNotIn('Traceback', text)
+        self.assertEqual(text.count('错误：'), 1, text)
+        self.assertIn('nostate/session.json', text, 'it must say which file it looked in')
+
+    def test_a_local_failure_does_not_report_an_http_status(self):
+        from pikpakget.api import PikPakError
+        plain = PikPakError('还没有登录', action='session')
+        self.assertNotIn('HTTP', str(plain))
+        self.assertIn('action=session', str(plain))
+        server = PikPakError('被限流', status=429, code=4003, action='restore')
+        self.assertIn('HTTP 429, code=4003, action=restore', str(server))
+
+    def test_a_lone_session_in_the_old_place_is_found(self):
+        import pikpakget.cli as cli
+        old = os.path.join(self.dir, 'repo')
+        os.makedirs(os.path.join(old, '.pikpakget'))
+        with open(os.path.join(old, '.pikpakget', 'session.json'), 'w') as handle:
+            handle.write('{}')
+        captured = []
+        original = os.getcwd()
+        os.chdir(old)
+        self.addCleanup(os.chdir, original)
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, 'home'))
+        cli._warn_about_legacy_state(args, lambda message, level='info': captured.append(message))
+        self.assertEqual(len(captured), 1, captured)
+        self.assertIn('登录会话', captured[0])
+
+
 class TestStateFollowsTheUser(unittest.TestCase):
     """The state directory used to default to `./.pikpakget`, so a login from one
     directory was invisible to a run from another and read as a dropped session."""

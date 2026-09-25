@@ -72,7 +72,15 @@ class PikPakError(RuntimeError):
         self.throttled = throttled
 
     def __str__(self):
-        return f'{super().__str__()} [HTTP {self.status} code={self.code} action={self.action}]'
+        # a local failure (no session, nothing sent) should not claim an HTTP status
+        # of None, and a server failure should still carry the three fields that make
+        # it diagnosable from a log line alone
+        detail = ', '.join(part for part in (
+            f'HTTP {self.status}' if self.status is not None else '',
+            f'code={self.code}' if self.code is not None else '',
+            f'action={self.action}' if self.action else '') if part)
+        base = super().__str__()
+        return f'{base} [{detail}]' if detail else base
 
 
 def _safe_body(body):
@@ -284,9 +292,9 @@ class Client:
 
     def ensure_session(self, force=False):
         if not self.session.access_token:
-            raise PikPakError(f'还没有登录（会话文件 {self.session.path} 不存在或没有 '
-                             f'access_token）：先运行 `--login <邮箱>`，注意它的 '
-                             f'--state-dir 要和这里一致', action='session')
+            raise PikPakError(f'还没有登录：{self.session.path} 里没有会话。'
+                             f'先运行 --login，或把 --state-dir 指向已登录的那个目录',
+                              action='session')
         if force or not self.session.valid(TOKEN_REFRESH_MARGIN):
             self.refresh()
         return self.session.access_token
