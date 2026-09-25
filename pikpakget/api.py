@@ -504,9 +504,12 @@ class Client:
         return self.call('GET', '/v1/share', params=params)
 
     def share_children(self, share_id, pass_code_token, parent_id):
-        return list(self._paginate('/v1/share/detail', {
+        params = {
             'share_id': share_id, 'pass_code_token': pass_code_token,
-            'parent_id': parent_id, 'limit': 200, 'order': 6}))
+            'limit': 200, 'order': 6}
+        if parent_id:
+            params['parent_id'] = parent_id
+        return self._paginate('/v1/share/detail', params)
 
     @staticmethod
     def node(item, prefix=''):
@@ -525,7 +528,13 @@ class Client:
         aggregate `total_size`, which makes sizing a subtree cheap."""
         info = self.share_info(share_id, pass_code)
         token = info.get('pass_code_token') or ''
-        nodes = [self.node(item) for item in (info.get('files') or [])]
+        # /v1/share includes only the first root page. /v1/share/detail can
+        # paginate the root just as it does nested folders.
+        nodes = []
+        for item in self.share_children(share_id, token, ''):
+            nodes.append(self.node(item))
+            if len(nodes) >= max_nodes:
+                break
         queue = [(node['id'], node['path']) for node in nodes if node['is_folder']]
         while queue and len(nodes) < max_nodes:
             folder_id, prefix = queue.pop(0)

@@ -9,6 +9,7 @@ Changes since each release are listed here. Before 1.0, command and state format
 - Removed old single-account state migration and the `--no-sweep` option. Old state formats are rejected with an error.
 - Changed the default to one download connection. `--repeat 0` now means one pass; unfinished work produces a nonzero exit status.
 - Fixed cases where a dry run changed cloud files, a same-size local file was accepted without a content check, a truncated share listing was marked complete, or the same share in two local folders shared one progress record.
+- Paginate files directly in a share's root, so a share with more than one root page is fully listed.
 - Added `--doctor`, clearer status and error output, and local HTTP transfer tests.
 
 ## 0.1.3

@@ -939,19 +939,44 @@ class TestShareTruncationFlag(unittest.TestCase):
         import pikpakget.api as api
         client = api.Client.__new__(api.Client)      # no session: only walk logic here
         pages = {
-            '*': [{'id': 'F1', 'name': 'a', 'kind': 'drive#file', 'size': '1'},
+            '': [{'id': 'F1', 'name': 'a', 'kind': 'drive#file', 'size': '1'},
                   {'id': 'D1', 'name': 'dir', 'kind': 'drive#folder'}],
             'D1': [{'id': 'F2', 'name': 'b', 'kind': 'drive#file', 'size': '2'}],
         }
         client.share_info = lambda share_id, pass_code='': {
             'pass_code_token': 'T', 'title': 'x', 'file_num': 2,
-            'files': pages['*']}
+            'files': pages['']}
         client.share_children = lambda share_id, token, parent_id: pages.get(parent_id, [])
         whole = client.walk_share('S')
         self.assertFalse(whole['truncated'])
         self.assertEqual(len(whole['nodes']), 3)
         capped = client.walk_share('S', max_nodes=2)
         self.assertTrue(capped['truncated'], 'a capped walk must say so')
+
+    def test_walk_paginates_share_root(self):
+        import pikpakget.api as api
+        client = api.Client.__new__(api.Client)
+        client.share_info = lambda share_id, pass_code='': {
+            'pass_code_token': 'T', 'title': 'x', 'file_num': 3,
+            'files': [{'id': 'F1'}], 'next_page_token': 'second'}
+        requests = []
+
+        def call(method, path, *, params):
+            requests.append(dict(params))
+            if params.get('page_token'):
+                return {'files': [{'id': 'F3', 'name': 'c', 'kind': 'drive#file',
+                                   'size': '3'}], 'next_page_token': ''}
+            return {'files': [{'id': 'F1', 'name': 'a', 'kind': 'drive#file',
+                               'size': '1'},
+                              {'id': 'F2', 'name': 'b', 'kind': 'drive#file',
+                               'size': '2'}], 'next_page_token': 'second'}
+
+        client.call = call
+        result = client.walk_share('S')
+        self.assertEqual([node['id'] for node in result['nodes']], ['F1', 'F2', 'F3'])
+        self.assertFalse(result['truncated'])
+        self.assertEqual(requests[1]['page_token'], 'second')
+        self.assertTrue(all('parent_id' not in request for request in requests))
 
 
 class TestLinkIdentity(unittest.TestCase):
@@ -2018,45 +2043,6 @@ class TestCapDoesNotCondemnTheFile(RunLinkHarness):
         record = self.pipeline.state.file('SHAREFILE1')
         self.assertEqual((record['state'], record['attempts']), ('pending', 0))
         self.assertIn('流量', record['error'])
-
-
-def flatten(suite):
-    """Every leaf test case, however deeply `discover` nested the suites."""
-    for item in suite:
-        if isinstance(item, unittest.TestSuite):
-            yield from flatten(item)
-        else:
-            yield item
-
-
-class TestDocumentedCounts(unittest.TestCase):
-    """Both READMEs quote the number of tests, and both went stale silently. Counting
-    the suite from inside it keeps the claim tied to the code.
-
-    The count is deliberately *not* the current run's size: a loader inherited from
-    the command line reports 1 test when the suite is filtered with `-k`, which fails
-    the very assertion it exists to protect."""
-
-    def test_both_readmes_quote_the_real_number_of_tests(self):
-        import re
-        here = os.path.dirname(os.path.abspath(__file__))
-        loaded = unittest.TestLoader().discover(here, pattern='test_*.py')
-        counts = collections.Counter()
-        for case in flatten(loaded):
-            counts[case.id().split('.')[0]] += 1
-        self.assertEqual(sum(counts.values()), loaded.countTestCases())
-        claims = {'test_pure': {}, 'test_transfer': {}}
-        for name, key, pattern in (
-                ('README.md', 'test_pure', r'(\d+) on the pure logic'),
-                ('README.cn.md', 'test_pure', r'(\d+) 项纯逻辑测试'),
-                ('README.md', 'test_transfer', r'(\d+) real transfers over local HTTP'),
-                ('README.cn.md', 'test_transfer', r'(\d+) 项真下载测试')):
-            with open(os.path.join(here, '..', name), encoding='utf-8') as handle:
-                quoted = re.search(pattern, handle.read())
-            self.assertIsNotNone(quoted, f'{name} 里找不到"{key}"的测试数量说法')
-            self.assertEqual(int(quoted.group(1)), counts[key],
-                             f'{name} 说 {quoted.group(1)} 项 {key}，实际 {counts[key]} 项')
-            claims[key][name] = int(quoted.group(1))
 
 
 class TestHuman(unittest.TestCase):

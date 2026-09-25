@@ -96,7 +96,6 @@ Downloads go to a `.part` file first. When complete, the tool tries to verify th
 - PikPak's API, quotas, and rate controls may change. Account rotation cannot guarantee that every account will download successfully.
 - Native Windows lacks the POSIX file locks used here. Use Linux, macOS, or WSL.
 - Tests cover local logic and downloads from a local HTTP server. Multi-account cloud cleanup and rotation have not yet had an end-to-end test against real accounts.
-- If a share has more than one page of files directly at its root, this version may miss later pages without marking the listing as truncated. Do not treat its `--inventory` count as complete in that case.
 
 Logs and progress files contain share links, filenames, and local paths. Session files contain usable login tokens. Do not upload them unchanged. See [SECURITY.md](SECURITY.md).
 
