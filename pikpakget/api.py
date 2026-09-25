@@ -531,6 +531,10 @@ class Client:
         safe to run before deciding what to download. Folders expose their
         aggregate `total_size`, which makes sizing a subtree cheap."""
         info = self.share_info(share_id, pass_code)
+        status = info.get('share_status')
+        if status and status != 'OK':
+            reason = info.get('share_status_text') or '服务端未提供说明'
+            raise PikPakError(f'分享不可用（{status}）：{reason}')
         token = info.get('pass_code_token') or ''
         # /v1/share includes only the first root page. /v1/share/detail can
         # paginate the root just as it does nested folders.
@@ -539,6 +543,9 @@ class Client:
             nodes.append(self.node(item))
             if len(nodes) >= max_nodes:
                 break
+        if not nodes:
+            raise PikPakError('分享根目录返回空清单，无法确认分享真的为空；'
+                              '已停止处理此链接，避免把未下载内容标记为完成')
         queue = [(node['id'], node['path']) for node in nodes if node['is_folder']]
         while queue and len(nodes) < max_nodes:
             folder_id, prefix = queue.pop(0)

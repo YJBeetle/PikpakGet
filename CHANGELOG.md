@@ -13,6 +13,7 @@ Changes since each release are listed here. Before 1.0, command and state format
 - Reject a missing or empty `--folder-map` with a useful error instead of ignoring it or crashing.
 - Read `--status` from the local library without acquiring an account lock or contacting the cloud.
 - Use an empty parent ID when creating the cloud root `.pikpakget` folder, avoiding "Parent folder is not found" on a new account.
+- Treat non-OK share states such as `PROHIBITED` and unexpectedly empty listings as errors, so a run cannot report unavailable shares as completed downloads.
 - Added `--doctor`, clearer status and error output, and local HTTP transfer tests.
 
 ## 0.1.3

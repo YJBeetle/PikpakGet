@@ -94,6 +94,7 @@ Downloads go to a `.part` file first. When complete, the tool tries to verify th
 - A single file larger than the account's available cloud space is skipped.
 - One connection is the default; segments can be slower when the server limits throughput.
 - PikPak's API, quotas, and rate controls may change. Account rotation cannot guarantee that every account will download successfully.
+- If the service returns `PROHIBITED` (for example, because sharing is unavailable in the current region), the tool reports an error instead of marking an empty listing complete.
 - Native Windows lacks the POSIX file locks used here. Use Linux, macOS, or WSL.
 - Tests cover local logic and downloads from a local HTTP server. Multi-account cloud cleanup and rotation have not yet had an end-to-end test against real accounts.
 

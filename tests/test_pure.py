@@ -951,6 +951,26 @@ class TestVolumeFolding(unittest.TestCase):
 
 
 class TestShareTruncationFlag(unittest.TestCase):
+    def test_prohibited_share_is_an_error_not_an_empty_success(self):
+        from pikpakget.api import Client, PikPakError
+        client = Client.__new__(Client)
+        client.share_info = lambda share_id, pass_code='': {
+            'share_status': 'PROHIBITED',
+            'share_status_text': 'Sorry, sharing is not available in the current region',
+            'file_num': 0, 'files': []}
+        client.share_children = lambda *args: self.fail('prohibited share must not be listed')
+        with self.assertRaisesRegex(PikPakError, 'PROHIBITED.*current region'):
+            client.walk_share('S')
+
+    def test_empty_root_is_not_marked_complete(self):
+        from pikpakget.api import Client, PikPakError
+        client = Client.__new__(Client)
+        client.share_info = lambda share_id, pass_code='': {
+            'pass_code_token': 'T', 'title': 'share', 'file_num': 12}
+        client.share_children = lambda share_id, token, parent_id: iter(())
+        with self.assertRaisesRegex(PikPakError, '空清单'):
+            client.walk_share('S')
+
     def test_walk_reports_truncation_instead_of_losing_files_quietly(self):
         import pikpakget.api as api
         client = api.Client.__new__(api.Client)      # no session: only walk logic here
