@@ -50,7 +50,7 @@ https://mypikpak.com/s/SHARE_ID_2	剧集
 | `python3 -m pikpakget --whoami --account NAME` | 查看该账号的云盘用量和订阅到期日 |
 | `python3 -m pikpakget links.txt --inventory` | 统计分享文件、总大小及放不进云盘的文件 |
 | `python3 -m pikpakget links.txt --dry-run` | 枚举下载计划，不转存、下载或清理云端 |
-| `python3 -m pikpakget links.txt --status` | 查看此下载目录的进度 |
+| `python3 -m pikpakget --status` | 查看此下载目录的本地进度，账号被占用时也能运行 |
 | `python3 -m pikpakget links.txt --verify` | 复核已下载文件的内容 hash |
 | `python3 -m pikpakget --doctor` | 检查目录、锁、会话及网盘状态 |
 

@@ -1174,15 +1174,7 @@ class Pipeline:
         if not links and not partial:
             print(f'{self.args.state_dir} 里没有任何进度记录：这个库还没跑过，'
                   '或者 --dest 没指到那个库（进度跟着库走）')
-        try:
-            space = self.space()
-            free = disk_free(self.args.dest)
-            print(f'云盘 {human(space["usage"])}/{human(space["limit"])} 已用'
-                  + (f'，本地剩余 {human(free)}' if free is not None else
-                     f'，本地 {self.args.dest} 还没法测量'))
-        except PikPakError as error:
-            # a report that could not reach the account is not a clean report: a cron
-            # wrapper has to be able to tell the two apart
-            print(f'云盘配额查询失败: {error}')
-            return 1
+        free = disk_free(self.args.dest)
+        print(f'本地剩余 {human(free)}' if free is not None else
+              f'本地 {self.args.dest} 还没法测量')
         return 0

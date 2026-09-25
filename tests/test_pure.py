@@ -513,14 +513,11 @@ class TestStatusWithoutProgress(unittest.TestCase):
     def test_nothing_is_said_as_nothing_not_as_an_empty_table(self):
         import contextlib
         import io
-        from pikpakget.api import PikPakError
-        self.pipeline.space = lambda: (_ for _ in ()).throw(
-            PikPakError('还没有登录', action='session'))
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             code = self.pipeline.status()
         text = buffer.getvalue()
-        self.assertEqual(code, 1, 'a report that could not reach the account is not clean')
+        self.assertEqual(code, 0)
         self.assertNotIn('folder                    status', text)
         self.assertIn('没有任何进度记录', text)
 
@@ -532,8 +529,6 @@ class TestStatusWithoutProgress(unittest.TestCase):
         import contextlib
         import io
         import shutil
-        self.pipeline.space = lambda: {'limit': 6442450944, 'usage': 0, 'in_trash': 0,
-                                       'free': 6442450944}
         shutil.rmtree(self.pipeline.args.dest)
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
@@ -543,15 +538,14 @@ class TestStatusWithoutProgress(unittest.TestCase):
         self.assertFalse(os.path.exists(self.pipeline.args.dest),
                          'measuring the volume must not create the directory')
 
-    def test_quotas_are_still_counted_when_the_account_answers(self):
+    def test_status_does_not_contact_the_cloud(self):
         import contextlib
         import io
-        self.pipeline.space = lambda: {'limit': 6442450944, 'usage': 0, 'in_trash': 0,
-                                       'free': 6442450944}
+        self.pipeline.space = lambda: self.fail('status must not query the account')
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             self.assertEqual(self.pipeline.status(), 0)
-        self.assertIn('云盘', buffer.getvalue())
+        self.assertIn('本地剩余', buffer.getvalue())
 
 
 class TestLoginNeedsNoArgument(unittest.TestCase):
@@ -781,14 +775,14 @@ class TestPreflightSurvivesItsOwnSubject(unittest.TestCase):
         self.assertIn('库目录', text)
         self.assertIn('建不出来', text, 'the preflight names the path it cannot build')
 
-    def test_an_ordinary_run_refuses_with_an_exit_code_not_a_traceback(self):
+    def test_status_can_report_an_unusable_directory_without_login(self):
         import contextlib
         import io
         buffer = io.StringIO()
-        with contextlib.redirect_stderr(buffer):
+        with contextlib.redirect_stdout(buffer):
             code = self.cli.main(['--status', '--dest', self.unusable])
-        self.assertEqual(code, 2)
-        self.assertIn('没有已登录账号', buffer.getvalue())
+        self.assertEqual(code, 0)
+        self.assertIn('没有任何进度记录', buffer.getvalue())
         self.assertFalse(os.path.exists(self.unusable))
 
     def test_doctor_creates_a_directory_a_run_would_have_created(self):

@@ -50,7 +50,7 @@ Links without a folder name go to `(unfiled)`. You can also pass a CSV or TSV fi
 | `python3 -m pikpakget --whoami --account NAME` | Show drive usage and subscription expiry |
 | `python3 -m pikpakget links.txt --inventory` | Count files, total bytes, and files too large for the drive |
 | `python3 -m pikpakget links.txt --dry-run` | List the download plan without restores, downloads, or cloud cleanup |
-| `python3 -m pikpakget links.txt --status` | Show progress for this library |
+| `python3 -m pikpakget --status` | Show local progress for this library, even while an account is busy |
 | `python3 -m pikpakget links.txt --verify` | Recheck downloaded files against their content hashes |
 | `python3 -m pikpakget --doctor` | Check directories, locks, session, and drive state |
 

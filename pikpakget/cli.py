@@ -260,6 +260,8 @@ def main(argv=None):
 
 def _commands(args, log):
     try:
+        if args.status_only:
+            return Pipeline(args, log).status()
         registry = Accounts(args.account_dir)
         if args.doctor and not registry.items:
             client = Client(session_path=None, logger=log)
@@ -350,8 +352,6 @@ def _commands(args, log):
                                         account_id=item['id'], workspace_id=workspace_id)
                     if args.doctor:
                         return pipeline.doctor()
-                    if args.status_only:
-                        return pipeline.status()
                     if args.whoami:
                         about = client.about()
                         space = client.space()

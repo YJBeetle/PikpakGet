@@ -9,6 +9,19 @@ from pikpakget.pipeline import Log
 
 
 class TestAccountRotation(unittest.TestCase):
+    def test_status_needs_no_account_or_account_lock(self):
+        root = tempfile.mkdtemp()
+        dest = os.path.join(root, 'lib')
+        args = cli.build_parser().parse_args(['--status', '--dest', dest])
+        with mock.patch.dict(os.environ, {'PIKPAKGET_HOME': root}):
+            cli.resolve_dirs(args)
+        with mock.patch.object(cli, 'Accounts', side_effect=AssertionError('accounts loaded')), \
+                mock.patch.object(cli, '_acquire_lock', side_effect=AssertionError('lock taken')), \
+                mock.patch('builtins.print') as printed:
+            self.assertEqual(cli._commands(args, Log(quiet=True)), 0)
+        self.assertTrue(any('没有任何进度记录' in str(call)
+                            for call in printed.call_args_list))
+
     def test_all_accounts_locked_reports_unavailable(self):
         root = tempfile.mkdtemp()
         links = os.path.join(root, 'links.txt')
