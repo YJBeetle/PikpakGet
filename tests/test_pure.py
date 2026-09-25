@@ -951,6 +951,20 @@ class TestVolumeFolding(unittest.TestCase):
 
 
 class TestShareTruncationFlag(unittest.TestCase):
+    def test_inventory_exits_nonzero_when_share_is_prohibited(self):
+        from pikpakget.api import PikPakError
+        from pikpakget.pipeline import Log, Pipeline
+        directory = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=directory, max_files=0,
+                                  inventory_out=os.path.join(directory, 'inventory.csv'))
+        pipeline = Pipeline(args, Log(quiet=True))
+        pipeline.inventory = lambda job: (_ for _ in ()).throw(
+            PikPakError('分享不可用（PROHIBITED）：current region'))
+        job = {'share_id': 'EXAMPLEID1234567890ab', 'folder': 'Series'}
+        self.assertEqual(pipeline.report([job]), 1)
+        with open(args.inventory_out, encoding='utf-8-sig') as handle:
+            self.assertIn('PROHIBITED', handle.read())
+
     def test_prohibited_share_is_an_error_not_an_empty_success(self):
         from pikpakget.api import Client, PikPakError
         client = Client.__new__(Client)

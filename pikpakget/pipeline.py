@@ -952,11 +952,13 @@ class Pipeline:
 
     def report(self, jobs):
         rows = []
+        failed = 0
         for job in jobs:
             try:
                 report = self.inventory(job)
             except PikPakError as error:
-                self.log(f'{job["share_id"][-10:]}: {error}', 'warn')
+                failed += 1
+                self.log(f'{job["share_id"][-10:]}: {error}', 'error')
                 rows.append({'folder': job['folder'], 'share_id': job['share_id'],
                              'files': 0, 'bytes': 0, 'largest': 0, 'unfetchable': 0,
                              'title': '', 'error': str(error)[:160]})
@@ -982,7 +984,7 @@ class Pipeline:
         blocked = sum(row['unfetchable'] for row in rows)
         self.log(f'清单写出 {self.args.inventory_out}: {len(rows)} 链接 / {human(total)}'
                  f' | 单文件超过云盘配额、无法下载 {blocked} 个')
-        return 0
+        return 1 if failed else 0
 
     def doctor(self):
         """Preflight a machine before a long unattended run.
