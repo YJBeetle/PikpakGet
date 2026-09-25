@@ -288,7 +288,8 @@ class State:
 
 class Pipeline:
     def __init__(self, args, log, stop=lambda: False, client=None,
-                 account_id=None, workspace_id=None, confirm_cleanup=None):
+                 account_id=None, workspace_id=None, confirm_cleanup=None,
+                 account_label=None):
         self.args = args
         self.log = log
         self.stop = stop
@@ -301,6 +302,7 @@ class Pipeline:
         self.account_dir = getattr(args, 'account_dir', None) or account_dir()
         self.client = client or Client(session_path=None, logger=log)
         self.account_id = account_id
+        self.account_label = account_label
         self.workspace_id = workspace_id
         self.confirm_cleanup = confirm_cleanup
         self.traffic_capped = False
@@ -1039,7 +1041,8 @@ class Pipeline:
         self.state.save()
         space = self.space()
         self.quota_limit = space['limit']
-        self.log(f'{len(jobs)} 个链接 -> {self.args.dest} | 云盘 '
+        account = f'账号 {self.account_label} | ' if self.account_label else ''
+        self.log(f'{account}{len(jobs)} 个链接 -> {self.args.dest} | 云盘 '
                  f'{human(space["usage"])}/{human(space["limit"])} 已用'
                  f'（回收站 {human(space["in_trash"])}）| '
                  f'本地可用 {human(shutil.disk_usage(self.args.dest).free)} | '

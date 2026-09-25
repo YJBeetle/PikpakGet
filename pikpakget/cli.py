@@ -364,6 +364,7 @@ def _commands(args, log):
                         args.max_files = remaining_files
                     pipeline = Pipeline(args, log, stop=lambda: STOP, client=client,
                                         account_id=item['id'], workspace_id=workspace_id,
+                                        account_label=item['label'],
                                         confirm_cleanup=lambda items, owned: _confirm_cloud_cleanup(
                                             items, owned, item['label'], log))
                     if args.doctor:

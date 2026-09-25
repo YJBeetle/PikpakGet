@@ -493,6 +493,20 @@ class TestPipelineStartup(unittest.TestCase):
         key = (library, 'done.mp4'.casefold() if pipeline._case_folded else 'done.mp4')
         self.assertEqual(pipeline.used_names[key], 'F1')
 
+    def test_first_download_line_names_selected_account(self):
+        from pikpakget.pipeline import Pipeline
+        dirpath = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=os.path.join(dirpath, '.state'), dest=dirpath,
+                                  max_files=0, connections=1, gap=0, repeat=0,
+                                  dry_run=False, inventory_only=False, limit=0)
+        messages = []
+        client = type('Client', (), {'space': lambda self: {
+            'limit': 6_000_000_000, 'usage': 0, 'in_trash': 0}})()
+        pipeline = Pipeline(args, messages.append, client=client,
+                            account_id='account-1', account_label='first@example.com')
+        self.assertEqual(pipeline.run([]), 0)
+        self.assertTrue(messages[0].startswith('账号 first@example.com | 0 个链接 ->'))
+
 
 class TestStatusWithoutProgress(unittest.TestCase):
     """`--status` on a machine with no records printed a bare table header, which is

@@ -87,12 +87,13 @@ class TestAccountRotation(unittest.TestCase):
 
         class Pipeline:
             def __init__(self, args, log, stop, client, account_id, workspace_id,
-                         confirm_cleanup):
+                         confirm_cleanup, account_label):
                 self.account_id = account_id
+                self.account_label = account_label
                 self.files_done = 0
 
             def run(self, jobs):
-                visited.append(self.account_id)
+                visited.append((self.account_id, self.account_label))
                 return 4 if self.account_id == 'first' else 0
 
         with mock.patch.object(cli, 'Accounts', Registry), \
@@ -100,5 +101,5 @@ class TestAccountRotation(unittest.TestCase):
                 mock.patch.object(cli, '_acquire_lock', return_value=Lock('library')), \
                 mock.patch.object(cli, '_install_stop_handler'):
             self.assertEqual(cli._commands(args, Log(quiet=True)), 0)
-        self.assertEqual(visited, ['first', 'second'])
+        self.assertEqual(visited, [('first', 'first'), ('second', 'second')])
         self.assertEqual(released, ['first', 'second', 'library'])
