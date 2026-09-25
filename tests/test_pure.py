@@ -1299,6 +1299,96 @@ class TestShareLocalHierarchy(RunLinkHarness):
             self.pipeline.ensure_local_dir(os.path.join(self.lib, 'Series', 'share'))
 
 
+class TestStopBetweenFiles(RunLinkHarness):
+    def setUp(self):
+        super().setUp()
+        self.halt = False
+        self.pipeline.stop = lambda: self.halt
+
+    def test_gap_wait_observes_interrupt_within_one_short_sleep(self):
+        original = self.module.time.sleep
+        def interrupt(seconds):
+            self.assertLessEqual(seconds, 0.2)
+            self.halt = True
+        self.addCleanup(setattr, self.module.time, 'sleep', original)
+        self.module.time.sleep = interrupt
+        self.assertTrue(self.pipeline.wait_gap(20))
+
+    def test_interrupt_during_gap_does_not_start_next_file(self):
+        self.module.download_stream = self.fake_stream
+        self.pipeline.args.gap = 20
+        nodes = [{'id': f'F{index}', 'name': f'{index}.mp4', 'path': f'{index}.mp4',
+                  'size': 10, 'hash': None, 'is_folder': False}
+                 for index in (1, 2)]
+        self.pipeline.inventory = lambda job: {
+            'title': 'Series', 'token': 'TOKEN', 'files': nodes,
+            'total': 20, 'folders': 0, 'truncated': False}
+        self.pipeline.wait_gap = lambda seconds: setattr(self, 'halt', True) or True
+        job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111',
+               'share_id': 'EXAMPLEID1111111111', 'pass_code': '',
+               'folder': 'Series', 'order': 1}
+        self.assertEqual(self.pipeline.run_link(job), 'stopped')
+        self.assertEqual(len(self.downloads), 1)
+        self.assertFalse(os.path.exists(os.path.join(self.lib, 'Series', '2.mp4.part')))
+
+    def test_interrupt_during_transfer_keeps_cloud_copy_for_resume(self):
+        from pikpakget.api import PikPakError
+        self.pipeline.inventory = lambda job: {
+            'title': 'Series', 'token': 'TOKEN',
+            'files': [{'id': 'F1', 'name': 'one.mp4', 'path': 'one.mp4',
+                       'size': 10, 'hash': None, 'is_folder': False}],
+            'total': 10, 'folders': 0, 'truncated': False}
+        def restore(job, node, record, token):
+            record['restored_id'] = 'CLOUD'
+            return 'CLOUD'
+        def interrupt(*args):
+            self.halt = True
+            raise PikPakError('已中断（.part 已保留）')
+        self.pipeline.reuse_or_restore = restore
+        self.pipeline.fetch_to = interrupt
+        cleaned = []
+        self.pipeline.forget = lambda ids, size=0: cleaned.extend(ids)
+        job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111',
+               'share_id': 'EXAMPLEID1111111111', 'pass_code': '',
+               'folder': 'Series', 'order': 1}
+        self.assertEqual(self.pipeline.run_link(job), 'stopped')
+        record = self.pipeline.state.file('F1')
+        self.assertEqual(record['restored_id'], 'CLOUD')
+        self.assertEqual(record['state'], 'retry')
+        self.assertEqual(cleaned, [])
+
+    def test_run_does_not_query_cloud_again_after_interrupt(self):
+        first_space = self.pipeline.space
+        calls = []
+        def space():
+            calls.append(1)
+            if len(calls) > 1:
+                self.fail('interrupt must skip the end-of-round cloud query')
+            return first_space()
+        def stopped(job):
+            self.halt = True
+            return 'stopped'
+        self.pipeline.space = space
+        self.pipeline.run_link = stopped
+        job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111',
+               'share_id': 'EXAMPLEID1111111111', 'pass_code': '',
+               'folder': 'Series', 'order': 1}
+        self.assertEqual(self.pipeline.run([job]), 1)
+        self.assertEqual(len(calls), 1)
+
+    def test_cleanup_after_interrupt_skips_quota_polling(self):
+        from pikpakget.pipeline import Pipeline
+        self.halt = True
+        self.pipeline.args.no_delete = False
+        self.pipeline.created.add('CLOUD')
+        cleaned = []
+        self.pipeline.client.cleanup = lambda ids: cleaned.extend(ids)
+        self.pipeline.space = lambda: self.fail('stop must skip quota read')
+        self.pipeline.wait_space_freed = lambda *args: self.fail('stop must skip quota wait')
+        Pipeline.forget(self.pipeline, ['CLOUD'], 10)
+        self.assertEqual(cleaned, ['CLOUD'])
+
+
 class TestDryRunIsReadOnly(unittest.TestCase):
     def test_dry_run_does_not_create_a_library_journal_or_clean_cloud(self):
         from pikpakget.pipeline import Log, Pipeline

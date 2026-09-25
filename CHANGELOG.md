@@ -4,6 +4,7 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Respond to Ctrl+C during the between-file delay without starting another restore. Keep the current cloud copy and `.part` on an interrupted transfer, and skip quota polling and end-of-round cloud requests while exiting.
 - Report `--status` against the last full share inventory instead of only the file records written so far; find `.part` downloads inside nested folders. Make `--doctor` inspect `Pack From Shared` and describe the on-demand cleanup rule.
 - Keep the shared folder tree in the local library, including empty folders. Shares with only root files still put them directly in the selected series folder. Existing files in the previous flat layout are left untouched.
 - Added multiple accounts with separate sessions and device IDs. A download uses one unlocked account at a time and tries another when the current account reaches its downstream traffic limit.

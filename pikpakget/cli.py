@@ -44,7 +44,7 @@ def _install_stop_handler():
             print('再次收到中断，立即退出（状态已保存）')
             os._exit(1)
         STOP = True
-        print('\n收到中断：处理完当前文件后退出，进度已保存，重跑即续传', flush=True)
+        print('\n收到中断：正在停止，已完成进度和当前下载片段会保留，重跑即续传', flush=True)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, handler)
 

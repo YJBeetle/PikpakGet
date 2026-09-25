@@ -342,6 +342,8 @@ class Pipeline:
         tolerance = max(expect_drop * 0.02, 2_000_000)
         deadline = time.time() + timeout
         while time.time() < deadline:
+            if self.stop():
+                return None
             space = self.space()
             if space['usage'] <= floor + tolerance:
                 return space
@@ -349,6 +351,16 @@ class Pipeline:
         space = self.space()
         self.log(f'云端空间未在 {timeout}s 内回落，当前占用 {human(space["usage"])}', 'warn')
         return space
+
+    def wait_gap(self, seconds):
+        """Return promptly when Ctrl+C arrives between two files."""
+        deadline = time.monotonic() + seconds
+        while not self.stop():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.2, remaining))
+        return True
 
     def note_throttle(self, error):
         """Decide whether to stop the run, with advice that matches the cause.
@@ -464,6 +476,8 @@ class Pipeline:
     def wait_ready(self, file_id, expect_size):
         deadline = time.time() + POLL_TIMEOUT
         while time.time() < deadline:
+            if self.stop():
+                raise PikPakError('已中断（云端副本与本地进度已保留）')
             info = self.client.file(file_id)
             phase = str(info.get('phase') or '')
             size = int(info.get('size') or 0)
@@ -473,7 +487,8 @@ class Pipeline:
                 if expect_size and size and size != expect_size:
                     raise PikPakError(f'云端文件大小不符 {size} != {expect_size}')
                 return info
-            time.sleep(POLL_INTERVAL)
+            if self.wait_gap(POLL_INTERVAL):
+                raise PikPakError('已中断（云端副本与本地进度已保留）')
         raise PikPakError('等待云端文件就绪超时')
 
     def dest_path(self, node, dest_dir):
@@ -739,10 +754,11 @@ class Pipeline:
         mine = [item for item in ids if item and item in self.created]
         if not mine or self.args.no_delete:
             return
-        before = self.space()['usage']
+        before = self.space()['usage'] if not self.stop() else None
         self.client.cleanup(mine)
         self.created.difference_update(mine)
-        self.wait_space_freed(size, before)
+        if not self.stop():
+            self.wait_space_freed(size, before)
 
     def reclaim_workspace(self, needed):
         """Ask before deleting anything, and touch only Pack From Shared."""
@@ -912,7 +928,14 @@ class Pipeline:
                 self.state.save()
                 return 'blocked'
             if self.files_done and self.args.gap:
-                time.sleep(self.args.gap)
+                if self.wait_gap(self.args.gap):
+                    link['status'] = 'partial'
+                    self.state.save()
+                    return 'stopped'
+            if self.stop():
+                link['status'] = 'partial'
+                self.state.save()
+                return 'stopped'
             self.files_left -= 1
             self.log(f'  [{position}/{len(files)}] {human(node["size"])} {node["path"][:70]}')
             try:
@@ -922,6 +945,8 @@ class Pipeline:
                 self.state.save()
                 restored = self.reuse_or_restore(job, node, record, report['token'])
                 self.wait_ready(restored, node['size'])
+                if self.stop():
+                    raise PikPakError('已中断（云端副本与本地进度已保留）')
                 local, how = self.fetch_to(restored, node, parent_dir, record)
                 if how == 'unverified':
                     self.forget([restored], node['size'])
@@ -953,6 +978,13 @@ class Pipeline:
                     self.state.save()
                     self.log('转存请求的结果未知，停止本轮；下次启动会检查云端副本', 'error')
                     return 'throttled'
+                if self.stop():
+                    record['state'] = 'retry'
+                    record['error'] = str(error)[:300]
+                    link['status'] = 'partial'
+                    self.state.save()
+                    self.log('本轮已中断；本地片段和已识别的云端副本保留供续传', 'warn')
+                    return 'stopped'
                 if isinstance(error, TrafficCapped):
                     # the cap is not this file's fault: hand back the attempt just
                     # spent so the next run still has the full budget for it
@@ -1025,6 +1057,9 @@ class Pipeline:
                 tally[self.run_link(job)] += 1
                 if tally.get('throttled') or self.stop():
                     break
+            if self.stop():
+                self.log(f'第 {pass_number} 轮已中断；进度已保存')
+                return 1
             self.log(f'第 {pass_number} 轮结束：{dict(tally)} | '
                      f'云盘占用 {human(self.space()["usage"])}')
             if tally.get('throttled'):
