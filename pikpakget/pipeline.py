@@ -1079,11 +1079,14 @@ class Pipeline:
         by_url = collections.defaultdict(list)
         for rec in self.state.data['files'].values():
             by_url[rec.get('url')].append(rec)
-        print(f"{'folder':<26}{'status':<12}{'files':>7}{'done':>6}"
-              f"{'bytes':>11}{'planned':>11}  progress")
+        links = sorted(self.state.data['links'].items(), key=lambda kv: kv[1].get('order') or 999)
+        if links:
+            # a header with no rows underneath reads as broken output, which is exactly
+            # what it looks like when --state-dir points somewhere with no progress
+            print(f"{'folder':<26}{'status':<12}{'files':>7}{'done':>6}"
+                  f"{'bytes':>11}{'planned':>11}  progress")
         totals = {'got': 0, 'planned': 0, 'spent': 0.0, 'skipped': 0}
-        for url, info in sorted(self.state.data['links'].items(),
-                                key=lambda kv: kv[1].get('order') or 999):
+        for url, info in links:
             records = by_url.get(url, [])
             planned = sum(rec['size'] for rec in records)
             got = sum(rec['size'] for rec in records if rec['state'] == 'done')
@@ -1111,14 +1114,21 @@ class Pipeline:
             print(f"合计 {human(totals['got'])} / {human(totals['planned'])}，"
                   f"实测 {human(rate)}/s，剩余 {human(remaining)} 约需 "
                   f'{hours:.0f} 小时（{hours / 24:.1f} 天）')
-        for path in sorted(_glob.glob(os.path.join(self.args.dest, '*', '*.part'))):
+        partial = sorted(_glob.glob(os.path.join(self.args.dest, '*', '*.part')))
+        for path in partial:
             age = time.time() - os.path.getmtime(path)
             print(f'下载中: {os.path.basename(path)[:52]}… {human(os.path.getsize(path))}'
                   f'（{age:.0f}s 前还在写）')
+        if not links and not partial:
+            print(f'{self.args.state_dir} 里没有任何进度记录：还没跑过，'
+                  '或者 --state-dir 没指向有记录的那个目录')
         try:
             space = self.space()
             print(f'云盘 {human(space["usage"])}/{human(space["limit"])} 已用，'
                   f'本地剩余 {human(shutil.disk_usage(self.args.dest).free)}')
         except PikPakError as error:
+            # a report that could not reach the account is not a clean report: a cron
+            # wrapper has to be able to tell the two apart
             print(f'云盘配额查询失败: {error}')
+            return 1
         return 0

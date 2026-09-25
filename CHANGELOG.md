@@ -6,6 +6,12 @@ line and module APIs may change between releases.
 ## Unreleased
 
 ### Fixed
+- **`--status` with no records printed a bare table header**, which reads as broken
+  output — and it was most likely to happen to someone whose `--state-dir` pointed at a
+  directory with no progress, i.e. exactly the person the message should have told that.
+  The header now only appears with rows under it, and an empty report says so and names
+  the directory it read. `--status` also exits 1 when it could not reach the account,
+  so a wrapper can tell an empty library from a dead session.
 - **The log file was opened and never closed.** Every early exit (`--version`,
   `--whoami`, `--status`, `--doctor`, an error return) left the handle to the garbage
   collector: an unclosed-file warning at interpreter exit, and a file Windows would not

@@ -477,6 +477,47 @@ class TestPipelineStartup(unittest.TestCase):
         self.assertEqual(pipeline.used_names[key], 'done.mp4')
 
 
+class TestStatusWithoutProgress(unittest.TestCase):
+    """`--status` on a machine with no records printed a bare table header, which is
+    the single most confusing thing an empty report can do."""
+
+    def setUp(self):
+        import argparse
+        from pikpakget.pipeline import Log, Pipeline
+        self.dir = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
+                                  dest=os.path.join(self.dir, 'lib'), max_files=0,
+                                  connections=1, gap=0, repeat=0, dry_run=False,
+                                  inventory_only=False, limit=0, purge_trash=False,
+                                  no_delete=True, no_sweep=True)
+        os.makedirs(args.dest)
+        self.pipeline = Pipeline(args, Log(quiet=True))
+
+    def test_nothing_is_said_as_nothing_not_as_an_empty_table(self):
+        import contextlib
+        import io
+        from pikpakget.api import PikPakError
+        self.pipeline.space = lambda: (_ for _ in ()).throw(
+            PikPakError('还没有登录', action='session'))
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = self.pipeline.status()
+        text = buffer.getvalue()
+        self.assertEqual(code, 1, 'a report that could not reach the account is not clean')
+        self.assertNotIn('folder                    status', text)
+        self.assertIn('没有任何进度记录', text)
+
+    def test_quotas_are_still_counted_when_the_account_answers(self):
+        import contextlib
+        import io
+        self.pipeline.space = lambda: {'limit': 6442450944, 'usage': 0, 'in_trash': 0,
+                                       'free': 6442450944}
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.assertEqual(self.pipeline.status(), 0)
+        self.assertIn('云盘', buffer.getvalue())
+
+
 class TestLogCloses(unittest.TestCase):
     """main() opens the log and now closes it on every path; a library caller keeps
     writing to the one it made, so closing must be safe twice and writing after close
