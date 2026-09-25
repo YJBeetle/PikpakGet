@@ -53,6 +53,24 @@ def human(nbytes):
         value /= 1024
 
 
+def disk_free(path):
+    """Bytes free on the volume that would hold `path`, which need not exist yet.
+
+    statvfs on a missing directory raises FileNotFoundError, and a read-only command
+    like `--status` must not create `--dest` just to measure it — a fresh machine that
+    has never downloaded anything is the normal case there."""
+    probe = os.path.abspath(path)
+    while not os.path.exists(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:                       # climbed to a root with nothing above
+            return None
+        probe = parent
+    try:
+        return shutil.disk_usage(probe).free
+    except OSError:
+        return None
+
+
 def _clip_bytes(text, limit):
     """Cut a string to at most `limit` UTF-8 bytes without splitting a character."""
     encoded = text.encode('utf-8')
@@ -1124,8 +1142,10 @@ class Pipeline:
                   '或者 --state-dir 没指向有记录的那个目录')
         try:
             space = self.space()
-            print(f'云盘 {human(space["usage"])}/{human(space["limit"])} 已用，'
-                  f'本地剩余 {human(shutil.disk_usage(self.args.dest).free)}')
+            free = disk_free(self.args.dest)
+            print(f'云盘 {human(space["usage"])}/{human(space["limit"])} 已用'
+                  + (f'，本地剩余 {human(free)}' if free is not None else
+                     f'，本地 {self.args.dest} 还没法测量'))
         except PikPakError as error:
             # a report that could not reach the account is not a clean report: a cron
             # wrapper has to be able to tell the two apart

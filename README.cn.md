@@ -62,7 +62,7 @@ https://mypikpak.com/s/ANOTHER_ID
 ```bash
 python3 -m pikpakget links.txt --status   # 进度、实测速度、剩余时间
 python3 -m pikpakget --version
-python3 -m pikpakget --whoami             # 身份、配额、离线任务位
+python3 -m pikpakget --whoami             # 云盘用量、订阅到期
 python3 -m pikpakget links.txt --dry-run  # 只排计划，不改任何东西
 python3 -m pikpakget links.txt --max-files 5   # 先试一小口
 ```
@@ -200,7 +200,7 @@ pikpakget/api.py       HTTP 客户端：会话、验证码签名、分享/云盘
 pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
-tests/test_pure.py     159 项纯逻辑测试；不涉及账号、不联网
+tests/test_pure.py     160 项纯逻辑测试；不涉及账号、不联网
 tests/test_transfer.py   5 项真下载测试：本地 HTTP + 真 curl
 ```
 

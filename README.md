@@ -65,7 +65,7 @@ Other useful entry points:
 ```bash
 python3 -m pikpakget links.txt --status         # progress, measured speed, ETA
 python3 -m pikpakget --version
-python3 -m pikpakget --whoami                  # identity, quota, offline task slots
+python3 -m pikpakget --whoami                  # space used and subscription expiry
 python3 -m pikpakget links.txt --dry-run       # plan the work, change nothing
 python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 ```
@@ -233,7 +233,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     159 on the pure logic; no account, no network
+tests/test_pure.py     160 on the pure logic; no account, no network
 tests/test_transfer.py   5 real transfers over local HTTP, with real curl
 ```
 

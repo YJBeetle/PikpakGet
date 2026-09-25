@@ -507,6 +507,25 @@ class TestStatusWithoutProgress(unittest.TestCase):
         self.assertNotIn('folder                    status', text)
         self.assertIn('没有任何进度记录', text)
 
+    def test_a_missing_dest_is_measured_on_its_volume_not_crashed_on(self):
+        """`--status` on a machine that never downloaded anything died in statvfs.
+
+        The report is read-only, so it has no business creating `--dest` to answer a
+        question about free space."""
+        import contextlib
+        import io
+        import shutil
+        self.pipeline.space = lambda: {'limit': 6442450944, 'usage': 0, 'in_trash': 0,
+                                       'free': 6442450944}
+        shutil.rmtree(self.pipeline.args.dest)
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = self.pipeline.status()
+        self.assertEqual(code, 0, 'a missing downloads folder is not an error')
+        self.assertIn('本地剩余', buffer.getvalue())
+        self.assertFalse(os.path.exists(self.pipeline.args.dest),
+                         'measuring the volume must not create the directory')
+
     def test_quotas_are_still_counted_when_the_account_answers(self):
         import contextlib
         import io

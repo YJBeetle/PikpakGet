@@ -10,8 +10,22 @@ line and module APIs may change between releases.
   thing people type, and argparse answered a question about the account with an English
   usage block. A scripted call with no terminal gets one line and exit 2; the password
   prompt is now Chinese like the rest of the output.
+- **`--whoami` reports space and expiry, not codes.** It used to print `user_type=2`,
+  raw byte counts and a cloud-download slot line. The enum has no published meaning — our
+  account reports `user_type=2` next to a 6 GiB quota and an empty `expires_at`, so the
+  number reads as "member" while proving nothing — and offline task slots are what the
+  pipeline consumes, not something a status line needs (they stay in `--doctor`). Two
+  rows now: `云盘 694.3KiB / 6.0GiB` and `订阅 无到期时间`, since `expires_at` is the only
+  membership signal the API returns.
 
 ### Fixed
+- **`--status` crashed with a `FileNotFoundError` traceback whenever `--dest` did not
+  exist yet** — which is every machine that has never finished a download, i.e. the first
+  thing a reader of the README tries. The report asked for free space with
+  `shutil.disk_usage(dest)`, and statvfs refuses a missing path. It now climbs to the
+  nearest existing parent and measures that volume, which answers the question actually
+  being asked (how much room the downloads folder would have) without the report creating
+  anything; when even that is out of reach it says so instead of printing a stack trace.
 - **`--status` with no records printed a bare table header**, which reads as broken
   output — and it was most likely to happen to someone whose `--state-dir` pointed at a
   directory with no progress, i.e. exactly the person the message should have told that.

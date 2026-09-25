@@ -8,7 +8,7 @@ import time
 
 from . import __version__
 from .api import PikPakError, Client
-from .pipeline import Log, Pipeline, load_folder_map, read_links
+from .pipeline import Log, Pipeline, human, load_folder_map, read_links
 
 try:
     import fcntl
@@ -43,7 +43,8 @@ def build_parser():
     parser.add_argument('--password-stdin', action='store_true',
                         help='read the password from stdin instead of a prompt')
     parser.add_argument('--logout', action='store_true', help='delete the stored session')
-    parser.add_argument('--whoami', action='store_true', help='show identity and quota')
+    parser.add_argument('--whoami', action='store_true',
+                        help='show cloud space usage and subscription expiry')
     parser.add_argument('--doctor', action='store_true',
                         help='preflight this machine for a long run (python, curl, FIPS '
                              'SHA-1, volumes, session, quota) and exit 1 on anything that '
@@ -205,9 +206,10 @@ def _commands(args, log):
         if args.whoami:
             about = client.about()
             space = client.space()
-            slots = client.offline_task_slots()
-            print(f'user_type={about.get("user_type")} 云盘 {space["usage"]}/{space["limit"]} '
-                  f'（回收站 {space["in_trash"]}）离线任务位 {slots["usage"]}/{slots["limit"]}')
+            expires = str(about.get('expires_at') or '').strip()
+            trash = f'，回收站占 {human(space["in_trash"])}' if space['in_trash'] else ''
+            print(f'云盘   {human(space["usage"])} / {human(space["limit"])}{trash}')
+            print(f'订阅   {expires.split("T")[0] + " 到期" if expires else "无到期时间"}')
             return 0
     except PikPakError as error:
         print(f'错误：{error}', file=sys.stderr)
