@@ -527,49 +527,6 @@ class Pipeline:
             else:
                 os.mkdir(current)
 
-    def relocate_local(self, record, target, node):
-        """Move already downloaded bytes into the new share tree once verified."""
-        old = record.get('local')
-        if not old or old == target:
-            record['local'] = target
-            return
-        if record.get('state') == 'unverified' and size_on_disk(old):
-            return
-        base = os.path.realpath(self.args.dest)
-        source = os.path.realpath(old)
-        if (os.path.commonpath((base, source)) != base or os.path.islink(old)):
-            if record.get('state') in ('done', 'downloaded'):
-                record['state'] = 'pending'
-            record['local'] = target
-            self.state.save()
-            return
-        if record.get('state') in ('done', 'downloaded') and size_on_disk(old) == node['size']:
-            if node.get('hash') and verify_content(old, node['hash'], self.hash_sizes(record)) is None:
-                record['state'] = 'pending'
-            elif os.path.lexists(target):
-                raise PikPakError(f'新目录已有同名项目，保留原文件：{target}')
-            else:
-                self.ensure_local_dir(os.path.dirname(target))
-                os.replace(old, target)
-                self.log(f'已按分享目录整理本地文件：{node["path"][:70]}')
-        elif record.get('state') in ('done', 'downloaded'):
-            record['state'] = 'pending'
-        old_part, new_part = old + '.part', target + '.part'
-        if os.path.isfile(old_part) and not os.path.lexists(new_part):
-            self.ensure_local_dir(os.path.dirname(target))
-            os.replace(old_part, new_part)
-            for segment_dir in _glob.glob(old_part + '.segs*'):
-                new_segment_dir = new_part + segment_dir[len(old_part):]
-                if os.path.isdir(segment_dir) and not os.path.lexists(new_segment_dir):
-                    os.replace(segment_dir, new_segment_dir)
-        if record.get('home') == old:
-            record['home'] = target
-        record['local'] = target
-        old_key = self._name_key(os.path.dirname(old), os.path.basename(old))
-        if self.used_names.get(old_key) == (record.get('source_id') or record.get('path')):
-            self.used_names.pop(old_key)
-        self.state.save()
-
     def case_insensitive(self):
         """Whether the destination volume folds letter case in filenames.
 
@@ -869,14 +826,13 @@ class Pipeline:
                 self.log(link['error'], 'error')
                 return 'error'
             planned_local = self.dest_path(node, parent_dir)
-            try:
-                self.relocate_local(record, planned_local, node)
-            except (OSError, PikPakError) as error:
-                record.update({'state': 'failed', 'error': f'本地目录整理失败：{error}'})
-                link['status'] = 'partial'
-                self.state.save()
-                self.log(record['error'], 'error')
-                continue
+            if record.get('local') != planned_local and not (
+                    record.get('state') == 'unverified'
+                    and record.get('home') == planned_local):
+                record['state'] = 'pending'
+                record['local'] = planned_local
+                record['home'] = planned_local
+                record['quarantined'] = None
             previous_hash = record.get('source_hash')
             changed_source = bool(previous_hash and node.get('hash')
                                   and previous_hash != node['hash'])

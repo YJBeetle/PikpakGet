@@ -4,7 +4,7 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
-- Keep the shared folder tree in the local library, including empty folders. Shares with only root files still put them directly in the selected series folder. Move completed flat downloads into the tree on the next run without fetching them again.
+- Keep the shared folder tree in the local library, including empty folders. Shares with only root files still put them directly in the selected series folder. Existing files in the previous flat layout are left untouched.
 - Added multiple accounts with separate sessions and device IDs. A download uses one unlocked account at a time and tries another when the current account reaches its downstream traffic limit.
 - Restored files use the selected account's cloud `Pack From Shared` folder. Only when cloud space is insufficient does the tool offer to clear that folder; it waits for explicit confirmation and never clears other cloud folders or the account trash. Local progress and the library lock are stored in `<dest>/.pikpakget/`.
 - Removed old single-account state migration and the `--no-sweep` option. Old state formats are rejected with an error.

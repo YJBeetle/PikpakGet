@@ -39,7 +39,7 @@ https://mypikpak.com/s/SHARE_ID_2	Series
 
 Links without a folder name go to `(unfiled)`. You can also pass a CSV or TSV file containing `url,folder` pairs with `--folder-map`.
 
-The local library keeps the share's folder tree beneath the chosen series folder. For example, a file in the share's `Studio/Unnumbered` folders goes to `DIR/Series/Studio/Unnumbered/`. A share containing one root file, or several root files without a folder, puts those files directly in `DIR/Series/`. The share title is not used as a directory name. Empty share folders are created, too. Previously downloaded flat files are moved into the tree on the next run without downloading them again.
+The local library keeps the share's folder tree beneath the chosen series folder. For example, a file in the share's `Studio/Unnumbered` folders goes to `DIR/Series/Studio/Unnumbered/`. A share containing one root file, or several root files without a folder, puts those files directly in `DIR/Series/`. The share title is not used as a directory name. Empty share folders are created, too. The tool does not move files from the previous flat layout; if an old path differs from the new path, it downloads to the new location.
 
 The cloud staging folder is `Pack From Shared`. Starting a run does not clear it. If a file cannot fit in the available cloud space, the tool lists that folder's contents and waits for you to type `删除` before deleting them. A noninteractive run does not delete them. If the folder is empty or clearing it still leaves too little space, that file is marked failed. Cleanup is limited to `Pack From Shared`.
 

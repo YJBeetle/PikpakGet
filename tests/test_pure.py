@@ -1233,7 +1233,7 @@ class TestShareLocalHierarchy(RunLinkHarness):
         self.assertTrue(os.path.isfile(os.path.join(base, 'Selected folder', 'inside.mp4')))
         self.assertFalse(os.path.exists(os.path.join(base, 'Selected folder', 'beside.mp4')))
 
-    def test_completed_flat_file_is_moved_into_its_share_folder(self):
+    def test_previous_flat_file_is_left_untouched(self):
         from pikpakget.pipeline import job_key
         job = self.job()
         old = os.path.join(self.lib, 'Series', 'done.mp4')
@@ -1248,8 +1248,26 @@ class TestShareLocalHierarchy(RunLinkHarness):
         target = os.path.join(self.lib, 'Series', '象人工作室', 'done.mp4')
         self.assertEqual(record['local'], target)
         self.assertTrue(os.path.isfile(target))
-        self.assertFalse(os.path.exists(old))
-        self.assertEqual(self.downloads, [])
+        self.assertTrue(os.path.isfile(old))
+        self.assertEqual(len(self.downloads), 1)
+
+    def test_previous_flat_quarantine_is_left_untouched(self):
+        from pikpakget.pipeline import job_key
+        job = self.job()
+        old = os.path.join(self.lib, 'Series', 'bad.mp4.unverified')
+        os.makedirs(os.path.dirname(old))
+        with open(old, 'wb') as handle:
+            handle.write(b'x' * 10)
+        record = self.pipeline.state.file('F1', job_key(job))
+        record.update({'state': 'unverified', 'local': old,
+                       'home': old.removesuffix('.unverified'),
+                       'quarantined': old, 'size': 10})
+        folders = [self.folder('象人工作室', 'D1')]
+        self.inventory_with([self.file('bad.mp4', 'F1', 'D1', '象人工作室/bad.mp4')], folders)
+        self.assertEqual(self.pipeline.run_link(job), 'ok')
+        self.assertTrue(os.path.isfile(old))
+        self.assertTrue(os.path.isfile(os.path.join(self.lib, 'Series',
+                                                  '象人工作室', 'bad.mp4')))
 
     def test_existing_symlink_cannot_redirect_share_folder_outside_library(self):
         from pikpakget.api import PikPakError
