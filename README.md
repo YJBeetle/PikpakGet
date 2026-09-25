@@ -103,15 +103,14 @@ python3 -m pikpakget links.txt --account first@example.com  # use only one accou
 
 | directory | holds |
 |---|---|
-| `~/.pikpakget/` | `accounts.json` and `config.json`; the old root `device_id` is unused |
+| `~/.pikpakget/` | `accounts.json` and `config.json` |
 | `~/.pikpakget/accounts/<account ID>/` | that account's own `device_id` and `session.json` (both 0600), and device-local `lock` |
 | `<library>/.pikpakget/` | `state.json`, the library lock named `lock`, and logs, including for the default library |
 
 A library is identified by its path. Every library carries its own progress; account
 credentials stay in `~/.pikpakget/` on the device.
-An existing account without its own `device_id` must sign in again; the tool will not
-pair a newly generated ID with an old session. Logging out removes the account's
-session and device ID, so adding it again generates a new ID.
+Logging out removes the account's session and device ID, so adding it again
+generates a new ID.
 
 ## What the quota actually behaves like
 

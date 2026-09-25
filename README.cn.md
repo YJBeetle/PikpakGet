@@ -168,14 +168,13 @@ python3 -m pikpakget links.txt --account first@example.com  # 只用指定账号
 
 | 目录 | 装什么 |
 |---|---|
-| `~/.pikpakget/` | `accounts.json`、`config.json`；旧版顶层 `device_id` 不再使用 |
+| `~/.pikpakget/` | `accounts.json`、`config.json` |
 | `~/.pikpakget/accounts/<账号ID>/` | 该账号独立的 `device_id`、`session.json`（均为 0600）和设备级账号锁 `lock` |
 | `<库>/.pikpakget/` | `state.json`、单实例锁 `lock`、日志；默认库也一样 |
 
 背后两条规则：库靠路径识别，所以把 `--dest` 指到新地方就是开第二个库，而不是接着跑；
 每个库带着自己的**进度**，登录数据则留在设备上的 `~/.pikpakget/`。
-已有账号若缺少账号目录下的 `device_id`，须重新执行该账号的 `--login`；不会拿新设备号
-继续使用旧会话。退出账号会删除其会话和设备号，再次添加时生成新的设备号。
+退出账号会删除其会话和设备号，再次添加时生成新的设备号。
 
 ## 完整性校验
 
