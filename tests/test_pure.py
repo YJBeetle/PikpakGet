@@ -439,6 +439,55 @@ class TestDotFileNames(unittest.TestCase):
             self.assertNotIn(safe_name(name), ('', '.', '..'))
 
 
+class TestVolumeFolding(unittest.TestCase):
+    """macOS's default APFS and most SMB/CIFS mounts (how a NAS share usually
+    reaches a desktop) treat `Movie.mp4` and `movie.mp4` as the *same* path, so
+    comparing names exactly hands both files one destination and the second
+    download silently replaces the first."""
+
+    def setUp(self):
+        import argparse
+        from pikpakget.pipeline import Log, Pipeline
+        self.dir = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'), dest=self.dir,
+                                  max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
+                                  inventory_only=False, limit=0, purge_trash=False,
+                                  no_delete=True, no_sweep=True)
+        self.pipeline = Pipeline(args, Log(quiet=True))
+        self.dest = os.path.join(self.dir, 'Series')
+        os.makedirs(self.dest)
+
+    def paths(self, folded, *names):
+        self.pipeline._case_folded = folded
+        self.pipeline.used_names = {}
+        out = []
+        for index, name in enumerate(names):
+            node = {'id': f'F{index}', 'name': name, 'size': 10, 'path': name,
+                    'hash': None, 'is_folder': False}
+            out.append(os.path.basename(self.pipeline.dest_path(node, self.dest)))
+        return out
+
+    def test_a_folded_volume_gives_case_variants_distinct_names(self):
+        chosen = self.paths(True, 'Movie.mp4', 'movie.mp4', 'MOVIE.MP4')
+        self.assertEqual(len({name.casefold() for name in chosen}), 3, chosen)
+
+    def test_a_strict_volume_needs_no_renaming(self):
+        self.assertEqual(self.paths(False, 'Movie.mp4', 'movie.mp4'),
+                         ['Movie.mp4', 'movie.mp4'])
+
+    def test_the_probe_agrees_with_the_filesystem(self):
+        with open(os.path.join(self.dir, 'CaseProbe.tmp'), 'wb'):
+            pass
+        real = os.path.exists(os.path.join(self.dir, 'caseprobe.tmp'))
+        os.remove(os.path.join(self.dir, 'CaseProbe.tmp'))
+        self.pipeline._case_folded = None
+        self.assertEqual(self.pipeline.case_insensitive(), real)
+
+    def test_the_probe_cleans_up_after_itself(self):
+        self.pipeline.case_insensitive()
+        self.assertFalse([name for name in os.listdir(self.dir) if 'case-probe' in name])
+
+
 class TestShareTruncationFlag(unittest.TestCase):
     def test_walk_reports_truncation_instead_of_losing_files_quietly(self):
         import pikpakget.api as api

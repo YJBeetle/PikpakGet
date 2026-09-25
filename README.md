@@ -222,7 +222,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     129 tests on the pure logic; no account, no network
+tests/test_pure.py     133 tests on the pure logic; no account, no network
 ```
 
 ## Development
@@ -268,8 +268,14 @@ Stated plainly, because each one has bitten someone at some point:
 ## Platform notes
 
 Written against macOS and uses `fcntl` for the single-instance lock and POSIX path
-semantics; it has not been run on Windows. Long paths are clamped to 200 UTF-8 bytes
-per component to stay inside `NAME_MAX`.
+semantics; Windows refuses to run it with an explanation rather than an ImportError.
+Long paths are clamped to 200 UTF-8 bytes per component to stay inside `NAME_MAX`.
+
+**Case-folding volumes are handled.** macOS's default APFS and most SMB/CIFS mounts —
+the usual way a NAS share reaches a desktop — treat `Movie.mp4` and `movie.mp4` as one
+path, while ext4 treats them as two. The destination volume is probed once, and on a
+folding volume a case variant of an already-chosen filename gets renamed like any other
+collision instead of overwriting it.
 
 ## License
 

@@ -280,8 +280,9 @@ class Pipeline:
         self.used_names = {}
         for rec in self.state.data['files'].values():
             if rec.get('local'):
-                self.used_names[(os.path.dirname(rec['local']),
-                                 os.path.basename(rec['local']))] = rec.get('path', '')
+                self.used_names[self._name_key(os.path.dirname(rec['local']),
+                                               os.path.basename(rec['local']))] = rec.get('path', '')
+        self._case_folded = None
         self.files_left = args.max_files or 1 << 30
         self.files_done = 0
         self.bytes_done = 0
@@ -451,18 +452,43 @@ class Pipeline:
         the chosen name is remembered in state, which keeps a resumed run writing
         to the same file instead of creating a second copy of it."""
         name = safe_name(node['name'])
-        taken = self.used_names.get((dest_dir, name))
+        taken = self.used_names.get(self._name_key(dest_dir, name))
         if taken and taken != node['path']:
             parent = node['path'].rsplit('/', 2)[-2] if '/' in node['path'] else ''
             name = safe_name(f'{parent} - {node["name"]}' if parent else node['path'])
             bump = 2
-            while self.used_names.get((dest_dir, name)) not in (None, node['path']):
+            while self.used_names.get(self._name_key(dest_dir, name)) not in (None, node['path']):
                 stem, dot, ext = name.rpartition('.')
                 name = f'{stem} ({bump}).{ext}' if dot else f'{name} ({bump})'
                 bump += 1
             self.log(f'同名冲突，另存为 {name}', 'debug')
-        self.used_names[(dest_dir, name)] = node['path']
+        self.used_names[self._name_key(dest_dir, name)] = node['path']
         return os.path.join(dest_dir, name)
+
+    def _name_key(self, dest_dir, name):
+        return (dest_dir, name.casefold() if self.case_insensitive() else name)
+
+    def case_insensitive(self):
+        """Whether the destination volume folds letter case in filenames.
+
+        macOS's default APFS and most SMB/CIFS mounts (the usual way a NAS share
+        reaches a desktop) treat `Movie.mp4` and `movie.mp4` as the same path, while
+        ext4 treats them as two. Comparing names exactly therefore hands both files
+        the same destination on a folded volume: the second download overwrites the
+        first and state records two finished files where one exists. Probed once,
+        because a rename probe costs a filesystem round trip we do not want per file."""
+        if self._case_folded is None:
+            probe = 'pikpakget-case-probe.XX'
+            try:
+                os.makedirs(self.args.dest, exist_ok=True)
+                with open(os.path.join(self.args.dest, probe), 'wb'):
+                    pass
+                self._case_folded = os.path.exists(os.path.join(self.args.dest,
+                                                                probe.casefold()))
+                os.remove(os.path.join(self.args.dest, probe))
+            except OSError:
+                self._case_folded = False      # cannot tell: assume the strict case
+        return self._case_folded
 
     def _we_wrote(self, path):
         """Whether state records this exact file as something we downloaded.

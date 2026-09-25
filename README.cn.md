@@ -192,7 +192,7 @@ pikpakget/api.py       HTTP 客户端：会话、验证码签名、分享/云盘
 pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
-tests/test_pure.py     129 项纯逻辑测试；不涉及账号、不联网
+tests/test_pure.py     133 项纯逻辑测试；不涉及账号、不联网
 ```
 
 ## 开发
@@ -230,8 +230,13 @@ python3 -m unittest discover -s tests -t . -v
 
 ## 平台说明
 
-按 macOS 编写，单实例锁用 `fcntl`，路径语义是 POSIX 的；没在 Windows 上跑过。
-每个路径成分会被截断到 200 UTF-8 字节以内，以躲开 `NAME_MAX`。
+按 macOS 编写，单实例锁用 `fcntl`，路径语义是 POSIX 的；Windows 上会以一句说明拒绝
+运行，而不是抛 ImportError。每个路径成分会被截断到 200 UTF-8 字节以内，以躲开
+`NAME_MAX`。
+
+**大小写折叠的卷已经处理。** macOS 默认 APFS 和多数 SMB/CIFS 挂载（NAS 共享最常见的
+接法）把 `Movie.mp4` 与 `movie.mp4` 当成同一个路径，ext4 则当成两个。目的卷只探测一次；
+在折叠卷上，已用文件名的"换个大小写"会按普通重名让路，而不是把前者覆盖掉。
 
 ## 许可
 

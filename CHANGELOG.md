@@ -5,6 +5,14 @@ line and module APIs may change between releases.
 
 ## Unreleased
 
+### Fixed
+- **Two files whose names differed only by letter case could overwrite each other.**
+  macOS's default APFS and most SMB/CIFS mounts fold case in filenames, so
+  `Movie.mp4` and `movie.mp4` are one path there while ext4 sees two, and the
+  destination-name dedupe compared them exactly: the second download replaced the
+  first and state recorded both as finished. The destination volume is probed once and
+  case variants now collide the way identical names already did.
+
 ### Added
 - **The daily 20 GB downstream traffic cap is recognised.** It arrives as an ordinary
   `HTTP 400` with an upsell body (`error_code` 3, "Today's downstream traffic 20.1 G
