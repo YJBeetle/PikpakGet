@@ -18,7 +18,7 @@ import shutil
 import sys
 import time
 
-from .api import PikPakError, Client, parse_share_url
+from .api import PikPakError, Client, TrafficCapped, parse_share_url
 from .stream import (PIECE_SIZES, SegmentRefused, download_segments, download_stream,
                      verify_content)
 
@@ -345,6 +345,11 @@ class Pipeline:
         if self.client.session_dead:
             self.log('会话续期被服务器拒绝，停止本轮：请重新运行 --login '
                      '后重跑同一命令（进度已保存）', 'error')
+            return True
+        if isinstance(error, TrafficCapped):
+            # the counter is daily, so the wait is measured in hours, not seconds
+            self.log('今日下行流量已用满，停止本轮：请至少 1 小时后重跑同一命令'
+                     '（这个额度按天计，跨过零点必然可用；进度已保存）', 'error')
             return True
         if getattr(error, 'throttled', False) or status in (429, 503):
             self.throttle_hits += 1
@@ -757,7 +762,13 @@ class Pipeline:
                 self.throttle_hits = 0      # the counter means *consecutive*
                 self.log(f'    {how}，云端已清理 -> {os.path.basename(local)[:56]}')
             except (PikPakError, OSError) as error:
-                record['state'] = 'failed' if record['attempts'] >= MAX_ATTEMPTS else 'retry'
+                if isinstance(error, TrafficCapped):
+                    # the cap is not this file's fault: hand back the attempt just
+                    # spent so the next run still has the full budget for it
+                    record['attempts'] = max(record['attempts'] - 1, 0)
+                    record['state'] = 'pending'
+                else:
+                    record['state'] = 'failed' if record['attempts'] >= MAX_ATTEMPTS else 'retry'
                 record['error'] = str(error)[:300]
                 link['status'] = 'partial'
                 self.state.save()

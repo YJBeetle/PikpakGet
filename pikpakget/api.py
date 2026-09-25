@@ -54,6 +54,10 @@ THROTTLE_BACKOFF = (30, 120, 480, 900)
 NETWORK_RETRY_WAITS = (5, 15, 45, 120, 240)
 SHARE_ID = re.compile(
     r'(?:mypikpak\.com|pickpackapp\.com|mypikpak\.net|pikpak\.me)/s/([A-Za-z0-9_\-]{8,})')
+# The free tier's daily downstream traffic cap (20 GB) arrives as an ordinary HTTP 400
+# carrying an upsell body, so nothing in the retry ladder would recognise it: every
+# remaining file would spend its attempts against the same wall.
+TRAFFIC_CAP = re.compile(r'downstream traffic|has exceeded the limit', re.I)
 
 
 class PikPakError(RuntimeError):
@@ -69,6 +73,12 @@ class PikPakError(RuntimeError):
 
     def __str__(self):
         return f'{super().__str__()} [HTTP {self.status} code={self.code} action={self.action}]'
+
+
+class TrafficCapped(PikPakError):
+    """Today's downstream traffic quota is used up. Backing off for minutes fixes
+    nothing — the counter is daily — so the run ends and the same command is re-run
+    after it rolls over."""
 
 
 def captcha_sign(client_id, device_id, timestamp=None):
@@ -325,6 +335,11 @@ class Client:
                 self.log(f'网络抖动（{problem[:70]}），{wait}s 后重试', 'warn')
                 time.sleep(wait)
                 continue
+            if TRAFFIC_CAP.search(problem) or TRAFFIC_CAP.search(str(body)):
+                # a fact about the account today, not about this file: no back-off
+                # ladder and no retries, the run simply ends and is re-run later
+                raise TrafficCapped(f'今日下行流量已到上限: {problem[:160]}', status=status,
+                                    code=body.get('error_code'), action=action)
             throttled = self._throttled(status, body)
             if status in (401, 403) and 'token' in problem.lower():
                 self._captchas.clear()

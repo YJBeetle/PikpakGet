@@ -5,6 +5,15 @@ line and module APIs may change between releases.
 
 ## Unreleased
 
+### Added
+- **The daily 20 GB downstream traffic cap is recognised.** It arrives as an ordinary
+  `HTTP 400` with an upsell body (`error_code` 3, "Today's downstream traffic 20.1 G
+  has exceeded the limit 20 G"), which nothing here classified as anything but a failed
+  file — observed ending a run at file 40/238 after every remaining file's download
+  request failed the same way. `api.TrafficCapped` now names it, the first occurrence
+  stops the round with advice to re-run later, and the file's attempt is handed back so
+  its budget is full next time.
+
 ### Fixed
 - **"No candidate block size reproduced the hash" no longer means "the file is
   corrupt".** The rule is reverse engineered and the uploader's block size has no

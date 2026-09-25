@@ -1522,6 +1522,76 @@ class TestUnsupportedPlatform(unittest.TestCase):
         self.assertEqual(cli.main(['--version']), 0)
 
 
+class TestDailyTrafficCap(unittest.TestCase):
+    """A free account gets 20 GB of downstream traffic a day, and the wall it returns
+    is a plain HTTP 400 with an upsell body. Nothing in the retry ladder reads that as
+    a stop condition, so every remaining file in a 238-file listing would spend its
+    attempts against the same limit before the run noticed."""
+
+    CAP_BODY = {'error_description': '{"title":"Today\'s downstream traffic 20.1 G '
+                                      'has exceeded the limit 20 G"}', 'error_code': 3}
+
+    def setUp(self):
+        from pikpakget.api import Client
+        dirpath = tempfile.mkdtemp()
+        self.client = Client(session_path=os.path.join(dirpath, 'session.json'),
+                             device_id_path=os.path.join(dirpath, 'device_id'))
+        self.client.session.store({'access_token': 'a' * 40, 'refresh_token': 'r',
+                                   'sub': 'u', 'expires_at': time.time() + 3600})
+        self.client.captcha_token = lambda action: 'captcha-token'
+        self.slept = []
+        import pikpakget.api as api
+        original = api.time.sleep
+        api.time.sleep = lambda seconds: self.slept.append(seconds)
+        self.addCleanup(setattr, api.time, 'sleep', original)
+
+    def feed(self, result):
+        self.client._raw = lambda *args, **kwargs: result
+
+    def test_the_cap_is_named_by_type_not_left_as_a_generic_400(self):
+        from pikpakget.api import TrafficCapped
+        self.feed((400, self.CAP_BODY))
+        with self.assertRaises(TrafficCapped) as caught:
+            self.client.download_url('FILEID')
+        self.assertIn('20.1 G', str(caught.exception), 'the server\'s own figure should survive')
+        self.assertEqual(self.slept, [], 'a daily limit must not enter the back-off ladder')
+
+    def test_an_ordinary_400_is_still_just_a_failed_call(self):
+        from pikpakget.api import PikPakError, TrafficCapped
+        self.feed((400, {'error_description': 'share not found', 'error_code': 40001}))
+        with self.assertRaises(PikPakError) as caught:
+            self.client.download_url('FILEID')
+        self.assertNotIsInstance(caught.exception, TrafficCapped)
+
+    def test_the_first_cap_ends_the_run_without_counting_towards_throttle_rules(self):
+        from pikpakget.api import TrafficCapped
+        from pikpakget.pipeline import Log, Pipeline
+        import argparse
+        dirpath = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=os.path.join(dirpath, '.s'), dest=dirpath,
+                                  max_files=0, connections=1, gap=0, repeat=0)
+        pipeline = Pipeline(args, Log(quiet=True))
+        error = TrafficCapped('今日下行流量已到上限', status=400, code=3)
+        self.assertTrue(pipeline.note_throttle(error))
+        self.assertEqual(pipeline.throttle_hits, 0, 'it is not a rate limit')
+        self.assertEqual(pipeline.auth_hits, 0, 'and not a credential refusal')
+
+
+class TestCapDoesNotCondemnTheFile(RunLinkHarness):
+    """The attempt spent on a request that failed because of the account's daily
+    traffic has to come back, or three cap hits mark the file failed for good."""
+
+    def test_a_capped_request_hands_the_attempt_back(self):
+        from pikpakget.api import TrafficCapped
+        self.pipeline.client.download_url = lambda fid: (_ for _ in ()).throw(
+            TrafficCapped('今日下行流量已到上限', status=400, code=3))
+        outcome, _ = self.run_one(size=100)
+        self.assertEqual(outcome, 'throttled')
+        record = self.pipeline.state.data['files']['SHAREFILE1']
+        self.assertEqual((record['state'], record['attempts']), ('pending', 0))
+        self.assertIn('流量', record['error'])
+
+
 class TestDocumentedCounts(unittest.TestCase):
     """Both READMEs quote the number of tests, and both went stale silently. Counting
     the suite from inside it keeps the claim tied to the code.

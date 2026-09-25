@@ -110,6 +110,13 @@ Measured on a free account, and worth knowing before you plan a large run:
   reported by `--inventory` as `unfetchable` rather than attempted and left half-restored.
 - **Offline task slots are limited** (`quota.cloud_download`, 3 on free). Sequential
   single-file work stays well under it.
+- **A daily downstream traffic cap bites before the storage quota does.** The free tier
+  stops serving bytes at 20 GB/day, and the request that trips it arrives as an
+  ordinary `HTTP 400` with an upsell body — it looks like a bad file but is a fact
+  about the account. The tool names that error, ends the run on the first one, and
+  gives back the attempt the file had just spent, so the next run has its full budget.
+  Re-run the same command later: an hour is enough to be polite, past midnight is
+  enough to be sure.
 - **Throughput is shaped per account, not per connection.** A single connection
   measured 0.13–0.7 MiB/s over the course of a long run (it drifts down with time of
   day). Four ranged segments measured ~0.25 MiB/s in aggregate, with two of the four
@@ -144,6 +151,9 @@ for. On top of that the tool deliberately slows itself down:
   captcha tokens;
 - three consecutive throttle-grade failures stop the whole run and tell you to come
   back in an hour, instead of hammering until the account gets flagged;
+- a daily downstream traffic cap stops the run on the first occurrence — no back-off
+  inside a run can clear a limit that resets per day, so retrying file after file
+  would only spend attempts on a wall;
 - `--gap` rests 20 s between files, and `--limit` / `--max-files` let you work in
   deliberate batches.
 
@@ -210,7 +220,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     124 tests on the pure logic; no account, no network
+tests/test_pure.py     128 tests on the pure logic; no account, no network
 ```
 
 ## Development
