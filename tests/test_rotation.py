@@ -9,6 +9,21 @@ from pikpakget.pipeline import Log
 
 
 class TestAccountRotation(unittest.TestCase):
+    def test_cloud_cleanup_defaults_to_no(self):
+        items = [{'id': 'old', 'name': 'old.mp4'}]
+        with mock.patch.object(cli.sys.stdin, 'isatty', return_value=True), \
+                mock.patch('builtins.input') as answer:
+            for value, expected in [('y', True), ('Y', True), ('', False),
+                                    ('n', False), ('删除', False)]:
+                answer.return_value = value
+                self.assertEqual(cli._confirm_cloud_cleanup(
+                    items, set(), 'account', lambda *args: None), expected)
+            self.assertIn('[y/N]', answer.call_args.args[0])
+        with mock.patch.object(cli.sys.stdin, 'isatty', return_value=False), \
+                mock.patch('builtins.input', side_effect=AssertionError('must not prompt')):
+            self.assertFalse(cli._confirm_cloud_cleanup(
+                items, set(), 'account', lambda *args: None))
+
     def test_status_needs_no_account_or_account_lock(self):
         root = tempfile.mkdtemp()
         dest = os.path.join(root, 'lib')

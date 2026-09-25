@@ -32,7 +32,7 @@ def _confirm_cloud_cleanup(items, owned_ids, label, log):
         log('当前没有交互终端，未清理；需要清理时请在交互式终端重跑', 'warn')
         return False
     try:
-        return input('只永久删除上述 Pack From Shared 项目及其内容？输入“删除”确认：').strip() == '删除'
+        return input('永久删除上述 Pack From Shared 项目及其内容？[y/N] ').strip().lower() == 'y'
     except (EOFError, KeyboardInterrupt):
         return False
 
