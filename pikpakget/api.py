@@ -504,11 +504,12 @@ class Client:
         return self._paginate('/v1/share/detail', params)
 
     @staticmethod
-    def node(item, prefix=''):
+    def node(item, prefix='', parent_id=''):
         params = item.get('params') or {}
         folder = _is_folder(item)
         name = item.get('name') or ''
         return {'id': item.get('id'), 'name': name, 'prefix': prefix,
+                'parent_id': parent_id,
                 'path': f'{prefix}/{name}' if prefix else name, 'is_folder': folder,
                 'size': int(item.get('size') or params.get('total_size') or 0),
                 'child_count': int(params.get('total_count') or 0) if folder else None,
@@ -538,7 +539,7 @@ class Client:
         while queue and len(nodes) < max_nodes:
             folder_id, prefix = queue.pop(0)
             for item in self.share_children(share_id, token, folder_id):
-                node = self.node(item, prefix)
+                node = self.node(item, prefix, folder_id)
                 nodes.append(node)
                 if node['is_folder']:
                     queue.append((node['id'], node['path']))

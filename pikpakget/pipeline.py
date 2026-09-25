@@ -311,14 +311,15 @@ class Pipeline:
                     and (not account_id or rec.get('account_id') == account_id)):
                 self.created.add(rec['restored_id'])
         self.quota_limit = 0
-        # (folder, filename) -> source path inside the share, so two files that
+        # (folder, filename) -> source ID inside the share, so two files that
         # happen to share a name inside one cluster cannot overwrite each other
         self._case_folded = None
         self.used_names = {}
         for rec in self.state.data['files'].values():
             if rec.get('local'):
                 self.used_names[self._name_key(os.path.dirname(rec['local']),
-                                               os.path.basename(rec['local']))] = rec.get('path', '')
+                                               os.path.basename(rec['local']))] = (
+                                                   rec.get('source_id') or rec.get('path', ''))
         self.files_left = args.max_files or 1 << 30
         self.files_done = 0
         self.bytes_done = 0
@@ -393,6 +394,7 @@ class Pipeline:
         return {'title': walked.get('title') or '', 'token': walked['pass_code_token'],
                 'files': files, 'total': sum(node['size'] for node in files),
                 'folders': sum(1 for node in walked['nodes'] if node['is_folder']),
+                'folder_nodes': [node for node in walked['nodes'] if node['is_folder']],
                 'truncated': bool(walked.get('truncated'))}
 
     # ------------------------------------------------------------- one file step
@@ -475,27 +477,98 @@ class Pipeline:
         raise PikPakError('等待云端文件就绪超时')
 
     def dest_path(self, node, dest_dir):
-        """Final path for a share node, made unique inside the cluster folder.
+        """Final path for a share node, made unique inside its local parent.
 
         Names come from someone else's folder layout, so collisions are normal;
         the chosen name is remembered in state, which keeps a resumed run writing
         to the same file instead of creating a second copy of it."""
         name = safe_name(node['name'])
+        identity = node.get('id') or node['path']
         taken = self.used_names.get(self._name_key(dest_dir, name))
-        if taken and taken != node['path']:
+        if taken and taken != identity:
             parent = node['path'].rsplit('/', 2)[-2] if '/' in node['path'] else ''
             name = safe_name(f'{parent} - {node["name"]}' if parent else node['path'])
             bump = 2
-            while self.used_names.get(self._name_key(dest_dir, name)) not in (None, node['path']):
+            while self.used_names.get(self._name_key(dest_dir, name)) not in (None, identity):
                 stem, dot, ext = name.rpartition('.')
                 name = f'{stem} ({bump}).{ext}' if dot else f'{name} ({bump})'
                 bump += 1
             self.log(f'同名冲突，另存为 {name}', 'debug')
-        self.used_names[self._name_key(dest_dir, name)] = node['path']
+        self.used_names[self._name_key(dest_dir, name)] = identity
         return os.path.join(dest_dir, name)
 
     def _name_key(self, dest_dir, name):
         return (dest_dir, name.casefold() if self.case_insensitive() else name)
+
+    def local_folder_paths(self, report, root):
+        """Map share folder IDs to local paths; the share title is not a folder."""
+        paths = {'': root}
+        for node in report.get('folder_nodes', []):
+            parent = paths.get(node.get('parent_id') or '')
+            if parent is None:
+                raise PikPakError(f'分享文件夹缺少父目录：{node["name"][:60]}')
+            paths[node['id']] = self.dest_path(node, parent)
+        return paths
+
+    def ensure_local_dir(self, path):
+        """Create share folders without following a symlink out of the library."""
+        base = os.path.abspath(self.args.dest)
+        target = os.path.abspath(path)
+        if os.path.commonpath((base, target)) != base:
+            raise PikPakError(f'目标目录越出下载库：{path}')
+        current = base
+        for part in os.path.relpath(target, base).split(os.sep):
+            if part == '.':
+                continue
+            current = os.path.join(current, part)
+            if os.path.lexists(current):
+                if os.path.islink(current) or not os.path.isdir(current):
+                    raise PikPakError(f'目标目录不是普通文件夹：{current}')
+            else:
+                os.mkdir(current)
+
+    def relocate_local(self, record, target, node):
+        """Move already downloaded bytes into the new share tree once verified."""
+        old = record.get('local')
+        if not old or old == target:
+            record['local'] = target
+            return
+        if record.get('state') == 'unverified' and size_on_disk(old):
+            return
+        base = os.path.realpath(self.args.dest)
+        source = os.path.realpath(old)
+        if (os.path.commonpath((base, source)) != base or os.path.islink(old)):
+            if record.get('state') in ('done', 'downloaded'):
+                record['state'] = 'pending'
+            record['local'] = target
+            self.state.save()
+            return
+        if record.get('state') in ('done', 'downloaded') and size_on_disk(old) == node['size']:
+            if node.get('hash') and verify_content(old, node['hash'], self.hash_sizes(record)) is None:
+                record['state'] = 'pending'
+            elif os.path.lexists(target):
+                raise PikPakError(f'新目录已有同名项目，保留原文件：{target}')
+            else:
+                self.ensure_local_dir(os.path.dirname(target))
+                os.replace(old, target)
+                self.log(f'已按分享目录整理本地文件：{node["path"][:70]}')
+        elif record.get('state') in ('done', 'downloaded'):
+            record['state'] = 'pending'
+        old_part, new_part = old + '.part', target + '.part'
+        if os.path.isfile(old_part) and not os.path.lexists(new_part):
+            self.ensure_local_dir(os.path.dirname(target))
+            os.replace(old_part, new_part)
+            for segment_dir in _glob.glob(old_part + '.segs*'):
+                new_segment_dir = new_part + segment_dir[len(old_part):]
+                if os.path.isdir(segment_dir) and not os.path.lexists(new_segment_dir):
+                    os.replace(segment_dir, new_segment_dir)
+        if record.get('home') == old:
+            record['home'] = target
+        record['local'] = target
+        old_key = self._name_key(os.path.dirname(old), os.path.basename(old))
+        if self.used_names.get(old_key) == (record.get('source_id') or record.get('path')):
+            self.used_names.pop(old_key)
+        self.state.save()
 
     def case_insensitive(self):
         """Whether the destination volume folds letter case in filenames.
@@ -523,7 +596,7 @@ class Pipeline:
         """Stream the file to its final folder. Downloading straight into the
         destination (via `.part`) means an interrupted run never leaves a partial
         file that looks complete."""
-        os.makedirs(dest_dir, exist_ok=True)
+        self.ensure_local_dir(dest_dir)
         final = self.dest_path(node, dest_dir)
         part = f'{final}.part'
         expected = node['size']
@@ -774,12 +847,36 @@ class Pipeline:
         if self.args.dry_run:
             return 'planned'
         dest_dir = os.path.join(self.args.dest, job['folder'])
+        try:
+            folder_paths = self.local_folder_paths(report, dest_dir)
+            for local_dir in folder_paths.values():
+                self.ensure_local_dir(local_dir)
+        except (OSError, PikPakError) as error:
+            link.update({'status': 'error', 'error': f'建立本地目录失败：{error}'})
+            self.state.save()
+            self.log(link['error'], 'error')
+            return 'error'
         for position, node in enumerate(files, 1):
             if self.stop() or self.files_left <= 0:
                 link['status'] = 'partial'
                 self.state.save()
                 return 'stopped'
             record = self.state.file(node['id'], key)
+            parent_dir = folder_paths.get(node.get('parent_id') or '')
+            if parent_dir is None:
+                link.update({'status': 'error', 'error': f'文件缺少父目录：{node["path"]}'})
+                self.state.save()
+                self.log(link['error'], 'error')
+                return 'error'
+            planned_local = self.dest_path(node, parent_dir)
+            try:
+                self.relocate_local(record, planned_local, node)
+            except (OSError, PikPakError) as error:
+                record.update({'state': 'failed', 'error': f'本地目录整理失败：{error}'})
+                link['status'] = 'partial'
+                self.state.save()
+                self.log(record['error'], 'error')
+                continue
             previous_hash = record.get('source_hash')
             changed_source = bool(previous_hash and node.get('hash')
                                   and previous_hash != node['hash'])
@@ -800,7 +897,7 @@ class Pipeline:
                 record['state'] = 'pending'
             record['source_hash'] = node.get('hash')
             record.update({'name': node['name'], 'size': node['size'], 'path': node['path'],
-                           'local': record.get('local') or self.dest_path(node, dest_dir)})
+                           'local': record.get('local') or planned_local})
             if record['state'] == 'done' and size_on_disk(record.get('local')) == node['size']:
                 continue
             if record['state'] == 'unverified':
@@ -869,7 +966,7 @@ class Pipeline:
                 self.state.save()
                 restored = self.reuse_or_restore(job, node, record, report['token'])
                 self.wait_ready(restored, node['size'])
-                local, how = self.fetch_to(restored, node, dest_dir, record)
+                local, how = self.fetch_to(restored, node, parent_dir, record)
                 if how == 'unverified':
                     self.forget([restored], node['size'])
                     self.files_done += 1          # bytes landed; the verdict is separate

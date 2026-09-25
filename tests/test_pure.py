@@ -491,7 +491,7 @@ class TestPipelineStartup(unittest.TestCase):
         # the map holds the *source path inside the share*, which is what a later
         # same-name file is compared against to decide whether to rename
         key = (library, 'done.mp4'.casefold() if pipeline._case_folded else 'done.mp4')
-        self.assertEqual(pipeline.used_names[key], 'done.mp4')
+        self.assertEqual(pipeline.used_names[key], 'F1')
 
 
 class TestStatusWithoutProgress(unittest.TestCase):
@@ -1000,6 +1000,7 @@ class TestShareTruncationFlag(unittest.TestCase):
         whole = client.walk_share('S')
         self.assertFalse(whole['truncated'])
         self.assertEqual(len(whole['nodes']), 3)
+        self.assertEqual(whole['nodes'][-1]['parent_id'], 'D1')
         capped = client.walk_share('S', max_nodes=2)
         self.assertTrue(capped['truncated'], 'a capped walk must say so')
 
@@ -1172,6 +1173,79 @@ class TestSameShareTwoDownloads(RunLinkHarness):
             self.assertTrue(os.path.isfile(os.path.join(self.lib, folder, 'a.mp4')))
         self.assertEqual(len(self.downloads), 2)
         self.assertEqual(len(self.pipeline.state.data['files']), 2)
+
+
+class TestShareLocalHierarchy(RunLinkHarness):
+    def job(self):
+        return {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111',
+                'share_id': 'EXAMPLEID1111111111', 'pass_code': '',
+                'folder': 'Series', 'order': 1}
+
+    def file(self, name, file_id, parent_id='', path=None):
+        return {'id': file_id, 'name': name, 'path': path or name,
+                'parent_id': parent_id, 'size': 10, 'hash': None, 'is_folder': False}
+
+    def folder(self, name, folder_id, parent_id='', path=None):
+        return {'id': folder_id, 'name': name, 'path': path or name,
+                'parent_id': parent_id, 'is_folder': True}
+
+    def inventory_with(self, files, folders, title='Share title'):
+        self.pipeline.inventory = lambda job: {
+            'title': title, 'token': 'TOKEN', 'files': files,
+            'folder_nodes': folders, 'total': sum(item['size'] for item in files),
+            'folders': len(folders), 'truncated': False}
+        self.module.download_stream = self.fake_stream
+
+    def test_single_file_lands_directly_in_series(self):
+        self.inventory_with([self.file('one.mp4', 'F1')], [], title='one.mp4')
+        self.assertEqual(self.pipeline.run_link(self.job()), 'ok')
+        self.assertTrue(os.path.isfile(os.path.join(self.lib, 'Series', 'one.mp4')))
+
+    def test_root_folder_nested_file_and_empty_folder_keep_the_tree(self):
+        folders = [self.folder('象人工作室', 'D1'),
+                   self.folder('未编号', 'D2', 'D1', '象人工作室/未编号'),
+                   self.folder('空目录', 'D3', 'D1', '象人工作室/空目录')]
+        files = [self.file('root.mp4', 'F1', 'D1', '象人工作室/root.mp4'),
+                 self.file('nested.mp4', 'F2', 'D2', '象人工作室/未编号/nested.mp4')]
+        self.inventory_with(files, folders, title='象人工作室')
+        self.assertEqual(self.pipeline.run_link(self.job()), 'ok')
+        base = os.path.join(self.lib, 'Series', '象人工作室')
+        self.assertTrue(os.path.isfile(os.path.join(base, 'root.mp4')))
+        self.assertTrue(os.path.isfile(os.path.join(base, '未编号', 'nested.mp4')))
+        self.assertTrue(os.path.isdir(os.path.join(base, '空目录')))
+
+    def test_multiple_selected_files_do_not_get_a_title_folder(self):
+        self.inventory_with([self.file('one.mp4', 'F1'), self.file('two.mp4', 'F2')], [],
+                            title='one.mp4')
+        self.assertEqual(self.pipeline.run_link(self.job()), 'ok')
+        self.assertTrue(os.path.isfile(os.path.join(self.lib, 'Series', 'one.mp4')))
+        self.assertTrue(os.path.isfile(os.path.join(self.lib, 'Series', 'two.mp4')))
+        self.assertFalse(os.path.isdir(os.path.join(self.lib, 'Series', 'one.mp4')))
+
+    def test_completed_flat_file_is_moved_into_its_share_folder(self):
+        from pikpakget.pipeline import job_key
+        job = self.job()
+        old = os.path.join(self.lib, 'Series', 'done.mp4')
+        os.makedirs(os.path.dirname(old))
+        with open(old, 'wb') as handle:
+            handle.write(b'x' * 10)
+        record = self.pipeline.state.file('F1', job_key(job))
+        record.update({'state': 'done', 'local': old, 'size': 10})
+        folders = [self.folder('象人工作室', 'D1')]
+        self.inventory_with([self.file('done.mp4', 'F1', 'D1', '象人工作室/done.mp4')], folders)
+        self.assertEqual(self.pipeline.run_link(job), 'ok')
+        target = os.path.join(self.lib, 'Series', '象人工作室', 'done.mp4')
+        self.assertEqual(record['local'], target)
+        self.assertTrue(os.path.isfile(target))
+        self.assertFalse(os.path.exists(old))
+        self.assertEqual(self.downloads, [])
+
+    def test_existing_symlink_cannot_redirect_share_folder_outside_library(self):
+        from pikpakget.api import PikPakError
+        outside = tempfile.mkdtemp()
+        os.symlink(outside, os.path.join(self.lib, 'Series'))
+        with self.assertRaises(PikPakError):
+            self.pipeline.ensure_local_dir(os.path.join(self.lib, 'Series', 'share'))
 
 
 class TestDryRunIsReadOnly(unittest.TestCase):
