@@ -79,6 +79,7 @@ python3 -m pikpakget links.txt --max-files 5   # 先试一小口
 | `--repeat N` | `0`（一轮） | 多轮扫尾，回头补之前失败的；整轮零进展就停 |
 | `--limit N` / `--max-files N` | `0`（不限） | 最多处理 N 个链接 / N 个文件 |
 | `--inventory` | 关 | 只统计每个链接的文件数/字节/最大单文件，不下载 |
+| `--doctor` | 关 | 换机器前的预检：Python、curl、FIPS 下的 SHA-1、目录与剩余空间、大小写折叠、会话与配额、云端残留副本；不占额度，有阻塞项时退出码 1 |
 | `--verify` | 关 | 用云端内容 hash 复核所有已下载文件；对不上的改名 `.unverified` 保留（绝不删除），有不符则退出码 1 |
 | `--dry-run` | 关 | 不转存、不写盘、不删除 |
 | `--no-delete` | 关 | 下完不删云盘副本（配额很快就满，仅调试用） |
@@ -192,7 +193,7 @@ pikpakget/api.py       HTTP 客户端：会话、验证码签名、分享/云盘
 pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
-tests/test_pure.py     133 项纯逻辑测试；不涉及账号、不联网
+tests/test_pure.py     139 项纯逻辑测试；不涉及账号、不联网
 ```
 
 ## 开发
@@ -227,6 +228,15 @@ python3 -m unittest discover -s tests -t . -v
 - **没发到 PyPI。** 每个 release 都会把打好的 wheel 与 sdist 挂到自己的资产上（见
   `.github/workflows/release-assets.yml`），`pip install <资产地址>` 即可；从克隆装是
   `pip install -e .`。
+
+## 换一台机器之前
+
+`python3 -m pikpakget --doctor --dest <你打算存放的目录> --state-dir <你打算放状态的目录>`
+回答的是"这台机器撑得住吗"：Python 版本底线、`curl`（只有分段下载需要它，
+`--connections 1` 不需要）、解释器的 SHA-1 能不能用（FIPS 会拒）、两个目录是否存在可写且
+空间够、锁有没有被别的实例占着、会话还剩多久，以及配额和云盘上的残留副本。它不需要 links
+文件、不占额度，下载进行中也能跑。退出码 1 表示有必须先处理的项，所以 cron 包装脚本可以
+拿它当闸门。
 
 ## 平台说明
 

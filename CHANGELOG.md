@@ -5,6 +5,22 @@ line and module APIs may change between releases.
 
 ## Unreleased
 
+### Added
+- **`--doctor`**, a preflight for a machine nobody has tested on: the Python floor,
+  `curl` (only the segmented path needs it), whether the interpreter allows SHA-1 at all
+  (FIPS builds refuse it), the destination and state directories (existence, writability,
+  free space, case folding), whether another instance holds the lock — probed with a real
+  non-blocking `flock`, since a dead process provably holds none — how long the session
+  has left, the quota, and any cloud copies that this tool's state does not account for.
+  It needs no links file, spends no quota, is safe to run during a download, and exits 1
+  when something blocks a long run.
+
+### Fixed
+- **Constructing the pipeline died on any state that had finished files.** The
+  case-folding flag was initialised after the loop that reads it, so a resumed run —
+  i.e. every real run after the first — raised `AttributeError` before doing anything.
+  No fixture had a state with a finished file in it; now one does.
+
 ### Fixed
 - **Two files whose names differed only by letter case could overwrite each other.**
   macOS's default APFS and most SMB/CIFS mounts fold case in filenames, so

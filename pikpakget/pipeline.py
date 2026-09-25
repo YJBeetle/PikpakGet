@@ -277,12 +277,12 @@ class Pipeline:
         self.quota_limit = 0
         # (folder, filename) -> source path inside the share, so two files that
         # happen to share a name inside one cluster cannot overwrite each other
+        self._case_folded = None
         self.used_names = {}
         for rec in self.state.data['files'].values():
             if rec.get('local'):
                 self.used_names[self._name_key(os.path.dirname(rec['local']),
                                                os.path.basename(rec['local']))] = rec.get('path', '')
-        self._case_folded = None
         self.files_left = args.max_files or 1 << 30
         self.files_done = 0
         self.bytes_done = 0
@@ -934,6 +934,118 @@ class Pipeline:
         self.log(f'清单写出 {self.args.inventory_out}: {len(rows)} 链接 / {human(total)}'
                  f' | 单文件超过云盘配额、无法下载 {blocked} 个')
         return 0
+
+    def doctor(self):
+        """Preflight a machine before a long unattended run.
+
+        Everything in here has broken a deployment somewhere: a missing `curl`, a FIPS
+        build that refuses SHA-1, a destination volume that folds case, an expired
+        session noticed only after the fourth hour. Costs no cloud space, and takes no
+        lock, so it is safe to run while a download is in flight. Returns 1 when
+        something has to be fixed first, which makes it usable from a cron wrapper."""
+        try:
+            import fcntl
+        except ImportError:
+            fcntl = None
+        import hashlib
+
+        rows = []
+
+        def check(name, level, detail):
+            rows.append((name, level))
+            print(f'  {name:<11}{level:<6}{detail}')
+
+        print('环境预检（不占云盘额度，可在下载进行中跑）')
+        check('python', 'ok' if sys.version_info >= (3, 10) else 'FAIL',
+              f'{sys.version.split()[0]}，需要 >= 3.10')
+        try:
+            hashlib.sha1(b'probe').hexdigest()
+            check('sha1', 'ok', '内容核对可用')
+        except ValueError as error:                       # FIPS builds
+            check('sha1', 'FAIL', f'SHA-1 被解释器拒绝，内容核对不可用：{error}')
+        if fcntl is None:
+            check('平台', 'FAIL', '没有 fcntl，本工具不支持这个平台（Windows 请用 WSL）')
+        else:
+            check('平台', 'ok', 'fcntl 单实例锁可用')
+        curl = shutil.which('curl')
+        if self.args.connections > 1:
+            check('curl', 'ok' if curl else 'FAIL',
+                  (curl + '（分段下载要用它）') if curl
+                  else '缺 curl，而 --connections > 1 需要它：装 curl 或用 --connections 1')
+        else:
+            check('curl', 'ok' if curl else 'note',
+                  '单流用 urllib，不需要 curl' if not curl else curl)
+        for label, path, needs_space in (
+                ('目标目录', self.args.dest, True), ('状态目录', self.args.state_dir, False)):
+            probe = path if os.path.isdir(path) else os.path.dirname(os.path.abspath(path))
+            if not os.path.isdir(path):
+                check(label, 'warn', f'{path} 还不存在（运行时会创建）')
+            elif not os.access(path, os.W_OK):
+                check(label, 'FAIL', f'{path} 不可写')
+            else:
+                check(label, 'ok', f'{path} 可写')
+            if needs_space and os.path.isdir(probe):
+                free = shutil.disk_usage(probe).free
+                check('剩余空间', 'ok' if free >= LOCAL_HEADROOM else 'FAIL',
+                      f'{human(free)} 可用，{label}所在卷至少需要 {human(LOCAL_HEADROOM)}')
+        records = self.state.data['files']
+        done = [rec for rec in records.values() if rec.get('state') == 'done']
+        check('已有进度', 'ok', f'{len(done)} 个完成记录 / {len(records)} 条')
+        if self.case_insensitive():
+            check('目的卷', 'note', '大小写不敏感：重名的不同大小写会改名让路（已按此处理）')
+        if fcntl:
+            try:
+                handle = open(os.path.join(self.args.state_dir, 'grab.lock'), 'a')
+            except OSError as error:
+                check('并发实例', 'warn', f'锁文件打不开：{error}')
+            else:
+                # append mode on purpose: 'w' would truncate the pid another instance
+                # wrote there and make its own status line lie
+                with handle:
+                    try:
+                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except OSError:
+                        check('并发实例', 'warn', '已有实例持有锁：同一 state 目录不要并发跑')
+                    else:
+                        check('并发实例', 'ok', '没有其他实例持有锁（探测完已释放）')
+        session = self.client.session
+        if not session.access_token:
+            check('会话', 'FAIL', '还没有登录：先运行 --login <邮箱>')
+            return self._doctor_verdict(rows)
+        minutes = int(session.expires_in() // 60)
+        check('会话', 'ok' if session.data.get('refresh_token') else 'warn',
+              f'user {session.user_id}，access_token 还有 {minutes} 分钟'
+              + ('' if session.data.get('refresh_token') else '，且没有 refresh_token（到点就得重登）'))
+        try:
+            space = self.client.space()
+            slots = self.client.offline_task_slots()
+            check('账号', 'ok', f'云盘 {human(space["usage"])}/{human(space["limit"])}'
+                              f'（回收站 {human(space["in_trash"])}）'
+                              f'，离线任务位 {slots["usage"]}/{slots["limit"]}')
+        except PikPakError as error:
+            check('账号', 'FAIL', f'API 走不通：{error}')
+            return self._doctor_verdict(rows)
+        try:
+            mine = {rec.get('restored_id') for rec in records.values()}
+            strangers = [item for item in self.client.list_folder('*')
+                         if item.get('kind') == 'drive#file' and item.get('id') not in mine]
+        except PikPakError as error:
+            check('云端残留', 'warn', f'列不出来：{error}')
+        else:
+            size = sum(int(item.get('size') or 0) for item in strangers)
+            check('云端残留', 'warn' if strangers else 'ok',
+                  f'{len(strangers)} 个副本不是本工具记录的，占 {human(size)}（额度按占用计）'
+                  if strangers else '云盘干净')
+        return self._doctor_verdict(rows)
+
+    @staticmethod
+    def _doctor_verdict(rows):
+        failed = [name for name, level in rows if level == 'FAIL']
+        warned = [name for name, level in rows if level == 'warn']
+        print(f'结论：{len(failed)} 项必须先处理'
+              + (f'（{", ".join(failed)}）' if failed else '')
+              + (f'，{len(warned)} 项提醒' if warned else ''))
+        return 1 if failed else 0
 
     def status(self):
         """Per-folder progress plus an ETA from the throughput this run actually

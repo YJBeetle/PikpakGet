@@ -82,6 +82,7 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | `--repeat N` | `0` (one pass) | re-pass the list to finish links that failed transiently; stops when a whole pass lands nothing |
 | `--limit N` / `--max-files N` | `0` (off) | stop after N links / N files |
 | `--inventory` | off | size up every link (count, bytes, largest file), no downloads |
+| `--doctor` | off | preflight this machine (python, curl, FIPS SHA-1, volumes, session, quota, stale cloud copies); no cloud space, exits 1 on anything blocking |
 | `--verify` | off | re-check every already-downloaded file against the server's content hash; quarantines what fails as `<name>.unverified` (never deletes), exits 1 on a mismatch |
 | `--dry-run` | off | no restores, no writes, no deletes |
 | `--no-delete` | off | keep cloud copies after downloading (fills the quota fast) |
@@ -222,7 +223,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     133 tests on the pure logic; no account, no network
+tests/test_pure.py     139 tests on the pure logic; no account, no network
 ```
 
 ## Development
@@ -264,6 +265,18 @@ Stated plainly, because each one has bitten someone at some point:
 - **Not published to PyPI.** Every release attaches a built wheel and sdist to
   its own assets (see `.github/workflows/release-assets.yml`), so `pip install
   <release asset url>` works; from a clone it is `pip install -e .`.
+
+## Moving to another machine
+
+`python3 -m pikpakget --doctor --dest <你打算存放的目录> --state-dir <你打算放状态的目录>`
+answers "will this run here?" before you commit to a multi-day job: it checks the Python
+floor, `curl` (only the segmented path needs it — `--connections 1` does not), whether
+the interpreter's SHA-1 is usable (FIPS builds refuse it), that both directories exist
+and are writable with enough free space, whether another instance holds the lock, how
+long the session has left, and what the quota and any leftover cloud copies look like.
+It needs no links file, takes no quota, and is safe to run while a download is in
+flight. Exit code 1 means something has to be fixed first, so a cron wrapper can use it
+as a gate.
 
 ## Platform notes
 

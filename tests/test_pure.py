@@ -170,7 +170,8 @@ class RunLinkHarness(unittest.TestCase):
         real_shutil = self.module.shutil
         self.addCleanup(setattr, self.module, 'shutil', real_shutil)
         plenty = types.SimpleNamespace(free=100 << 40)
-        self.module.shutil = types.SimpleNamespace(disk_usage=lambda path: plenty)
+        self.module.shutil = types.SimpleNamespace(disk_usage=lambda path: plenty,
+                                                  which=real_shutil.which)
         self.pipeline.client.download_url = lambda fid: ('http://host/file', {})
         self.addCleanup(setattr, pipeline_module, 'download_stream', pipeline_module.download_stream)
         self.downloads = []
@@ -437,6 +438,115 @@ class TestDotFileNames(unittest.TestCase):
     def test_a_name_that_is_only_dots_cannot_stand_for_a_directory(self):
         for name in ('.', '..', '  ..  '):
             self.assertNotIn(safe_name(name), ('', '.', '..'))
+
+
+class TestPipelineStartup(unittest.TestCase):
+    """Building the pipeline over a state that already has finished files is the very
+    first thing every resumed run does — and it once died on an attribute that was
+    initialised after the loop reading it, which no fixture had ever covered."""
+
+    def make_state(self, dirpath, local):
+        from pikpakget.pipeline import State
+        state_dir = os.path.join(dirpath, '.state')
+        os.makedirs(state_dir)
+        state = State(os.path.join(state_dir, 'state.json'))
+        with open(local, 'wb') as handle:
+            handle.write(b'x' * 10)
+        state.file('F1', 'https://mypikpak.com/s/EXAMPLEID1\tSeries').update(
+            {'state': 'done', 'local': local, 'size': 10, 'path': 'done.mp4'})
+        state.save()
+        return state_dir
+
+    def test_a_state_with_finished_files_builds_a_pipeline(self):
+        import argparse
+        from pikpakget.pipeline import Log, Pipeline
+        dirpath = tempfile.mkdtemp()
+        library = os.path.join(dirpath, 'lib', 'Series')
+        os.makedirs(library)
+        local = os.path.join(library, 'done.mp4')
+        state_dir = self.make_state(dirpath, local)
+        args = argparse.Namespace(state_dir=state_dir, dest=os.path.join(dirpath, 'lib'),
+                                  max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
+                                  inventory_only=False, limit=0, purge_trash=False,
+                                  no_delete=True, no_sweep=True)
+        pipeline = Pipeline(args, Log(quiet=True))
+        self.assertIsInstance(pipeline._case_folded, bool)
+        # the map holds the *source path inside the share*, which is what a later
+        # same-name file is compared against to decide whether to rename
+        key = (library, 'done.mp4'.casefold() if pipeline._case_folded else 'done.mp4')
+        self.assertEqual(pipeline.used_names[key], 'done.mp4')
+
+
+class TestDoctor(RunLinkHarness):
+    """`--doctor` is what a user runs on a machine nobody has tested on, so its own
+    verdicts have to be right: an absent curl with --connections 4 is a failure, a
+    stranger's cloud copy is only a warning."""
+
+    def stub_client(self, **overrides):
+        import types
+        session = types.SimpleNamespace(access_token='a' * 40, user_id='USER',
+                                        data={'refresh_token': 'r'},
+                                        expires_in=lambda: 3600.0)
+        client = types.SimpleNamespace(
+            session=session, space=lambda: {'limit': 6442450944, 'usage': 0, 'in_trash': 0,
+                                            'free': 6442450944},
+            offline_task_slots=lambda: {'limit': 3, 'usage': 0},
+            list_folder=lambda parent='*': [], log=lambda *a: None)
+        for name, value in overrides.items():
+            setattr(client, name, value)
+        self.pipeline.client = client
+        return client
+
+    def run_doctor(self):
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = self.pipeline.doctor()
+        return code, buffer.getvalue()
+
+    def test_a_healthy_machine_passes(self):
+        self.stub_client()
+        code, output = self.run_doctor()
+        self.assertEqual(code, 0, output)
+        self.assertNotIn('FAIL', output)
+
+    def test_no_session_is_a_failure_not_a_note(self):
+        import types
+        self.stub_client()
+        self.pipeline.client.session = types.SimpleNamespace(
+            access_token=None, user_id=None, data={}, expires_in=lambda: 0)
+        code, output = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertIn('--login', output)
+
+    def test_a_missing_curl_blocks_segmentation(self):
+        import types
+        self.stub_client()
+        real_shutil = self.module.shutil
+        self.addCleanup(setattr, self.module, 'shutil', real_shutil)
+        self.module.shutil = types.SimpleNamespace(which=lambda name: None,
+                                                   disk_usage=real_shutil.disk_usage)
+        self.pipeline.args.connections = 4
+        code, output = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertIn('curl', output)
+
+    def test_a_stranger_on_the_drive_is_only_a_warning(self):
+        self.stub_client(list_folder=lambda parent='*': [
+            {'kind': 'drive#file', 'id': 'SOMEONE_ELSE', 'size': '1600000000'}])
+        code, output = self.run_doctor()
+        self.assertEqual(code, 0, output)
+        self.assertIn('不是本工具记录的', output)
+
+    def test_a_dead_api_is_a_failure_with_its_reason(self):
+        from pikpakget.api import PikPakError
+        def refuse():
+            raise PikPakError('会话续期被拒', status=401)
+        self.stub_client(space=refuse)
+        code, output = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertIn('API 走不通', output)
 
 
 class TestVolumeFolding(unittest.TestCase):

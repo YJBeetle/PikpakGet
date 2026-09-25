@@ -43,6 +43,10 @@ def build_parser():
                         help='read the password from stdin instead of a prompt')
     parser.add_argument('--logout', action='store_true', help='delete the stored session')
     parser.add_argument('--whoami', action='store_true', help='show identity and quota')
+    parser.add_argument('--doctor', action='store_true',
+                        help='preflight this machine for a long run (python, curl, FIPS '
+                             'SHA-1, volumes, session, quota) and exit 1 on anything that '
+                             'has to be fixed first; costs no cloud space')
     parser.add_argument('--status', dest='status_only', action='store_true',
                         help='show per-folder progress, measured speed and ETA')
     parser.add_argument('--dest', default=os.path.join(os.getcwd(), 'downloads'),
@@ -132,6 +136,8 @@ def main(argv=None):
         return 0
 
     pipeline = Pipeline(args, log, stop=lambda: STOP)
+    if args.doctor:
+        return pipeline.doctor()
     if args.status_only:
         return pipeline.status()
     if args.whoami:
