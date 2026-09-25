@@ -9,7 +9,7 @@ Credentials live in the device's `~/.pikpakget/`; each library keeps progress in
 |---|---|---|
 | `accounts/<account ID>/session.json` | `access_token`, the single-use rotating `refresh_token`, user id | written with `0600`; a refresh token is enough to act as you |
 | `accounts.json` | account labels and rotation order | no passwords or tokens, but labels may identify you |
-| `device_id` | the device fingerprint sent with every request | not a secret, but replacing it changes how the account looks to PikPak |
+| `accounts/<account ID>/device_id` | that account's device fingerprint sent with its requests | not a secret, but replacing it changes how the account looks to PikPak |
 | `grab-<date>.log` | every line printed: **share URLs and downloaded filenames** | this is the file people accidentally paste |
 | `state.json` | the same, plus per-file progress and local paths | ditto |
 

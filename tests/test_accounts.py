@@ -20,10 +20,26 @@ class TestAccounts(unittest.TestCase):
 
     def test_same_server_user_updates_one_session(self):
         first = self.login('first@example.com', 'server-user-1')
-        second = self.login('renamed@example.com', 'server-user-1')
+        registry = Accounts(self.home)
+        with open(registry.device_path(first['id']), encoding='utf-8') as handle:
+            original_device = handle.read()
+        used_ids = []
+
+        def sign_in(client, username, password):
+            used_ids.append(client.device_id)
+            return {'access_token': 'access', 'refresh_token': 'refresh',
+                    'sub': 'server-user-1', 'expires_at': 9999999999}
+
+        with mock.patch.object(Client, 'sign_in', sign_in):
+            second = Accounts(self.home).login('renamed@example.com',
+                                               'synthetic-password')
         self.assertEqual(first['id'], second['id'])
         self.assertEqual(len(Accounts(self.home).items), 1)
         self.assertEqual(Accounts(self.home).items[0]['label'], 'renamed@example.com')
+        self.assertEqual(len(used_ids), 2)
+        self.assertEqual(used_ids[-1], original_device)
+        with open(registry.device_path(second['id']), encoding='utf-8') as handle:
+            self.assertEqual(handle.read(), original_device)
 
     def test_locked_account_is_skipped_and_all_locked_is_reportable(self):
         first = self.login('one@example.com', 'user-1')
@@ -59,9 +75,32 @@ class TestAccounts(unittest.TestCase):
         registry = Accounts(self.home)
         self.assertNotEqual(registry.client(first).session.path,
                             registry.client(second).session.path)
+        self.assertNotEqual(registry.client(first).device_id,
+                            registry.client(second).device_id)
+        self.assertFalse(os.path.exists(os.path.join(self.home, 'device_id')))
         for item in (first, second):
             path = registry.client(item).session.path
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            self.assertEqual(os.stat(registry.device_path(item['id'])).st_mode & 0o777,
+                             0o600)
+
+    def test_missing_account_device_requires_relogin(self):
+        item = self.login('one@example.com', 'user-1')
+        registry = Accounts(self.home)
+        os.remove(registry.device_path(item['id']))
+        with self.assertRaisesRegex(PikPakError, '重新运行 --login'):
+            registry.client(item)
+        self.assertFalse(os.path.exists(registry.device_path(item['id'])))
+        self.login('one@example.com', 'user-1')
+        self.assertTrue(os.path.isfile(registry.device_path(item['id'])))
+
+    def test_logout_removes_device_id(self):
+        item = self.login('one@example.com', 'user-1')
+        registry = Accounts(self.home)
+        registry.logout(item)
+        self.assertFalse(os.path.exists(registry.device_path(item['id'])))
+        self.assertFalse(os.path.exists(os.path.join(registry.directory(item['id']),
+                                                      'session.json')))
 
 
 class TestCloudWorkspace(unittest.TestCase):

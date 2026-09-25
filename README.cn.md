@@ -168,12 +168,14 @@ python3 -m pikpakget links.txt --account first@example.com  # 只用指定账号
 
 | 目录 | 装什么 |
 |---|---|
-| `~/.pikpakget/` | `accounts.json`、设备号、`config.json` |
-| `~/.pikpakget/accounts/<账号ID>/` | 该账号的 `session.json`（0600）和设备级账号锁 `lock` |
+| `~/.pikpakget/` | `accounts.json`、`config.json`；旧版顶层 `device_id` 不再使用 |
+| `~/.pikpakget/accounts/<账号ID>/` | 该账号独立的 `device_id`、`session.json`（均为 0600）和设备级账号锁 `lock` |
 | `<库>/.pikpakget/` | `state.json`、单实例锁 `lock`、日志；默认库也一样 |
 
 背后两条规则：库靠路径识别，所以把 `--dest` 指到新地方就是开第二个库，而不是接着跑；
 每个库带着自己的**进度**，登录数据则留在设备上的 `~/.pikpakget/`。
+已有账号若缺少账号目录下的 `device_id`，须重新执行该账号的 `--login`；不会拿新设备号
+继续使用旧会话。退出账号会删除其会话和设备号，再次添加时生成新的设备号。
 
 ## 完整性校验
 
@@ -214,7 +216,7 @@ pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
 tests/test_pure.py     153 项纯逻辑测试；不涉及真实账号、不联网
-tests/test_accounts.py   6 项多账号与锁测试；使用合成账号
+tests/test_accounts.py   8 项多账号与锁测试；使用合成账号
 tests/test_rotation.py   2 项账号切换与全部被锁测试；使用合成账号
 tests/test_transfer.py   5 项真下载测试：本地 HTTP + 真 curl
 utils/tg_export/       TG 导出 -> 按链接去重 -> 按作者/系列分组 -> 生成下载清单

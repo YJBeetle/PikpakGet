@@ -281,9 +281,7 @@ class Pipeline:
         # The CLI supplies the selected account's client. Direct callers receive an
         # in-memory, unauthenticated client and cannot accidentally use an old login.
         self.account_dir = getattr(args, 'account_dir', None) or account_dir()
-        self.client = client or Client(
-            session_path=None,
-            device_id_path=os.path.join(self.account_dir, 'device_id'), logger=log)
+        self.client = client or Client(session_path=None, logger=log)
         self.account_id = account_id
         self.workspace_id = workspace_id
         self.traffic_capped = False

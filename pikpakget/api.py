@@ -270,9 +270,8 @@ class Client:
                 # often, a device fingerprint PikPak has never met. Retrying fixes
                 # neither and is how a soft refusal becomes real risk control.
                 hint = ('（服务端拒绝的是"登录"这个动作本身，不代表密码错。先试换一个出口地址：'
-                        f'API 与分段下载都读 *_proxy 环境变量；或把已登录机器上 '
-                        f'{self.device_id_path or os.path.join(account_dir(), "device_id")} '
-                        '这个设备号复制过来。别连续重试，那可能升级成真风控。）')
+                        'API 与分段下载都读 *_proxy 环境变量；也请检查该账号的设备 ID。'
+                        '别连续重试，那可能升级成真风控。）')
             raise PikPakError(f'登录失败: {detail}{hint}\n服务端原文: {_safe_body(body)}',
                               status=status, action='signin')
         record = self._token_record(body)

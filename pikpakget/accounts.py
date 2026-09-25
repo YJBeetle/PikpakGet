@@ -27,9 +27,19 @@ class Accounts:
     def directory(self, account_id):
         return os.path.join(self.root, account_id)
 
+    def device_path(self, account_id):
+        return os.path.join(self.directory(account_id), 'device_id')
+
     def client(self, item, logger=None):
+        device_path = self.device_path(item['id'])
+        try:
+            with open(device_path, encoding='utf-8') as handle:
+                if not handle.read().strip():
+                    raise PikPakError(f'账号 {item["label"]} 的设备 ID 为空；请重新运行 --login')
+        except FileNotFoundError as error:
+            raise PikPakError(f'账号 {item["label"]} 缺少专属设备 ID；请重新运行 --login') from error
         return Client(session_path=os.path.join(self.directory(item['id']), 'session.json'),
-                      device_id_path=os.path.join(self.home, 'device_id'), logger=logger)
+                      device_id_path=device_path, logger=logger)
 
     def login(self, username, password, logger=None):
         # The server's user id, not the spelling of the login, identifies an account.
@@ -43,13 +53,18 @@ class Accounts:
             raise PikPakError(f'账号 {username} 正在下载，稍后再登录')
         account_lock = None
         try:
-            # Keep the new session in memory until the server identity is known.
-            client = Client(device_id_path=os.path.join(self.home, 'device_id'), logger=logger)
+            # An unknown account gets an ID in memory first. Nothing is persisted
+            # until the server tells us which account directory owns it.
+            known_device = self.device_path(known[0]['id']) if known else None
+            client = Client(device_id_path=known_device if known_device
+                            and os.path.isfile(known_device) else None, logger=logger)
             payload = client.sign_in(username, password)
             user_id = payload.get('sub')
             if not user_id:
                 raise PikPakError('登录响应没有用户 ID，无法安全保存多账号会话')
             account_id = hashlib.sha256(str(user_id).encode()).hexdigest()[:24]
+            if known and known[0]['id'] != account_id:
+                raise PikPakError('该登录名称对应的服务端账号已变化；请先退出原账号再登录')
             directory = self.directory(account_id)
             item = {'id': account_id, 'label': username}
             if known and known[0]['id'] == account_id:
@@ -59,6 +74,20 @@ class Accounts:
                 if account_lock is None:
                     raise PikPakError(f'账号 {username} 正在下载，稍后再登录')
             os.makedirs(directory, mode=0o700, exist_ok=True)
+            device_path = self.device_path(account_id)
+            if os.path.isfile(device_path) and device_path != known_device:
+                # An alternate login name resolved to an account we already know.
+                # Authenticate again with that account's established device ID.
+                client = Client(device_id_path=device_path, logger=logger)
+                payload = client.sign_in(username, password)
+                if str(payload.get('sub')) != str(user_id):
+                    raise PikPakError('重新登录后账号 ID 不一致，未覆盖原有会话')
+            elif not os.path.exists(device_path):
+                descriptor = os.open(device_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+                    handle.write(client.device_id)
+                    handle.flush()
+                    os.fsync(handle.fileno())
             Session(os.path.join(directory, 'session.json')).store(payload)
             os.makedirs(self.home, exist_ok=True)
             registry_lock = open(os.path.join(self.home, 'accounts.lock'), 'a+')
@@ -125,7 +154,10 @@ class Accounts:
         if handle is None:
             raise PikPakError(f'账号 {item["label"]} 正在使用，不能退出登录')
         try:
-            self.client(item).session.forget()
+            Session(os.path.join(self.directory(item['id']), 'session.json')).forget()
+            device_path = self.device_path(item['id'])
+            if os.path.exists(device_path):
+                os.remove(device_path)
             registry_lock = open(os.path.join(self.home, 'accounts.lock'), 'a+')
             try:
                 fcntl.flock(registry_lock, fcntl.LOCK_EX)

@@ -260,9 +260,7 @@ def _commands(args, log):
     try:
         registry = Accounts(args.account_dir)
         if args.doctor and not registry.items:
-            client = Client(session_path=None,
-                            device_id_path=os.path.join(args.account_dir, 'device_id'),
-                            logger=log)
+            client = Client(session_path=None, logger=log)
             return Pipeline(args, log, client=client).doctor()
         if args.login is not None:
             account = args.login
