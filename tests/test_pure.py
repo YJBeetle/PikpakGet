@@ -653,24 +653,6 @@ class TestErrorsAreReadable(unittest.TestCase):
         server = PikPakError('被限流', status=429, code=4003, action='restore')
         self.assertIn('HTTP 429, code=4003, action=restore', str(server))
 
-    def test_a_lone_session_in_the_old_place_is_found(self):
-        import pikpakget.cli as cli
-        old = os.path.join(self.dir, 'repo')
-        os.makedirs(os.path.join(old, '.pikpakget'))
-        with open(os.path.join(old, '.pikpakget', 'session.json'), 'w') as handle:
-            handle.write('{}')
-        captured = []
-        original = os.getcwd()
-        os.chdir(old)
-        self.addCleanup(os.chdir, original)
-        args = argparse.Namespace(state_dir=os.path.join(self.dir, 'home'),
-                                  account_dir=os.path.join(self.dir, 'home'),
-                                  dest=os.path.join(self.dir, 'repo', 'lib'))
-        cli._warn_about_legacy_state(args, lambda message, level='info': captured.append(message))
-        self.assertEqual(len(captured), 1, captured)
-        self.assertIn('登录会话', captured[0])
-
-
 class TestReservedDirectoryName(unittest.TestCase):
     """A library keeps its journal in `<library>/.pikpakget`, so a share folder or a
     file that arrives named exactly that would be written into the journal."""
@@ -683,10 +665,7 @@ class TestReservedDirectoryName(unittest.TestCase):
 class TestTheThreeAnchors(unittest.TestCase):
     """Where a run looks, and what it may write there.
 
-    The account directory (`~/.pikpakget`) holds the login, the device id and
-    `config.json`. The remembered library keeps its journal there too; any other library
-    carries its own `<library>/.pikpakget`, because a volume two machines mount is the
-    one case where progress has to travel with the data instead of with the account."""
+    The account directory holds credentials; every library owns its own journal."""
 
     def setUp(self):
         import unittest.mock
@@ -713,9 +692,9 @@ class TestTheThreeAnchors(unittest.TestCase):
         self.assertEqual(args.dest, os.path.expanduser(self.cli.DEFAULT_DEST))
         self.assertFalse(args.dest.startswith(elsewhere))
 
-    def test_the_remembered_library_keeps_its_journal_in_the_account_directory(self):
+    def test_the_remembered_library_keeps_its_journal_beside_the_library(self):
         args = self.resolve()
-        self.assertEqual(args.state_dir, self.home)
+        self.assertEqual(args.state_dir, os.path.join(args.dest, '.pikpakget'))
         self.assertEqual(args.account_dir, self.home)
 
     def test_another_library_carries_its_own_journal_but_not_its_login(self):
@@ -733,8 +712,7 @@ class TestTheThreeAnchors(unittest.TestCase):
         with contextlib.redirect_stdout(buffer):
             self.assertEqual(self.cli.write_config([f'dest={volume}']), 0)
         self.assertEqual(self.resolve().dest, volume)
-        self.assertEqual(self.resolve().state_dir, self.home,
-                         'the remembered library is now the default one, journal in home')
+        self.assertEqual(self.resolve().state_dir, os.path.join(volume, '.pikpakget'))
         third = os.path.join(self.dir, 'third')
         self.assertEqual(self.resolve('--dest', third).state_dir,
                          os.path.join(third, '.pikpakget'))
@@ -759,27 +737,6 @@ class TestTheThreeAnchors(unittest.TestCase):
             args = self.resolve()
         self.assertEqual(args.dest, os.path.expanduser(self.cli.DEFAULT_DEST))
         self.assertEqual(err.getvalue().count('读不了'), 1, err.getvalue())
-
-    def test_a_journal_this_run_is_not_reading_gets_named(self):
-        """The case that reads as lost progress: a run pointed at a second library, with
-        the first one's journal still sitting in the account directory."""
-        captured = []
-        os.makedirs(self.home, exist_ok=True)
-        with open(os.path.join(self.home, 'state.json'), 'w') as handle:
-            handle.write('{}')
-        volume = os.path.join(self.dir, 'nas', 'PikPak')
-        args = self.resolve('--dest', volume)
-        self.cli._warn_about_legacy_state(args, lambda m, level='info': captured.append(m))
-        self.assertEqual(len(captured), 1, captured)
-        self.assertIn(os.path.join(self.home, 'state.json'), captured[0])
-        self.assertIn('--dest', captured[0], 'it has to say how to make us see it')
-
-    def test_no_notice_when_nothing_else_has_a_journal(self):
-        captured = []
-        self.cli._warn_about_legacy_state(self.resolve(),
-                                          lambda m, level='info': captured.append(m))
-        self.assertEqual(captured, [])
-
 
 class TestPreflightSurvivesItsOwnSubject(unittest.TestCase):
     """The first real invocation of `--doctor` on a fresh machine was `--dest
@@ -1838,6 +1795,14 @@ class TestState(unittest.TestCase):
         backups = [name for name in os.listdir(self.dir) if 'corrupt' in name]
         self.assertEqual(len(backups), 1)
 
+    def test_unsupported_state_is_refused_without_replanning(self):
+        from pikpakget.api import PikPakError
+        with open(self.path, 'w', encoding='utf-8') as handle:
+            json.dump({'version': 1, 'links': {}, 'files': {}}, handle)
+        with self.assertRaises(PikPakError):
+            State(self.path)
+        self.assertEqual(os.listdir(self.dir), ['state.json'])
+
     def test_files_of_groups_by_link(self):
         state = State(self.path)
         state.file('A', 'url-a')
@@ -1851,53 +1816,6 @@ class TestState(unittest.TestCase):
         with open(self.path) as handle:
             json.load(handle)
         self.assertFalse(os.path.exists(self.path + '.tmp'))
-
-
-class TestStateMigration(unittest.TestCase):
-    """v1 keyed links by bare share URL, v2 by URL plus folder. Unmigrated records
-    are invisible to the new key, so a run would replan work it had already done."""
-
-    def setUp(self):
-        self.dir = tempfile.mkdtemp()
-        self.path = os.path.join(self.dir, 'state.json')
-
-    def write_v1(self, data):
-        with open(self.path, 'w', encoding='utf-8') as handle:
-            json.dump(data, handle)
-
-    def test_link_keys_gain_their_folder_and_files_follow(self):
-        self.write_v1({'version': 1,
-                       'links': {'http://s/A': {'status': 'partial', 'folder': 'Series'}},
-                       'files': {'F1': {'state': 'done', 'url': 'http://s/A'}}})
-        state = State(self.path)
-        self.assertEqual(state.data['version'], STATE_VERSION)
-        self.assertEqual(list(state.data['links']), ['http://s/A\tSeries'])
-        self.assertEqual(state.file('F1')['url'], 'http://s/A\tSeries')
-
-    def test_migration_is_persisted_so_it_runs_once(self):
-        self.write_v1({'version': 1, 'links': {'http://s/A': {'folder': 'Series'}},
-                       'files': {}})
-        State(self.path)
-        with open(self.path, encoding='utf-8') as handle:
-            on_disk = json.load(handle)
-        self.assertEqual(on_disk['version'], STATE_VERSION)
-        self.assertIn('http://s/A\tSeries', on_disk['links'])
-
-    def test_a_link_already_seen_under_the_new_key_is_merged(self):
-        self.write_v1({'version': 1, 'links': {
-            'http://s/A': {'status': 'partial', 'folder': 'Series', 'title': 'Series'},
-            'http://s/A\tSeries': {'status': 'active', 'file_count': 8}},
-            'files': {}})
-        state = State(self.path)
-        self.assertEqual(len(state.data['links']), 1)
-        kept = state.data['links']['http://s/A\tSeries']
-        self.assertEqual(kept['status'], 'active')       # the newer record wins
-        self.assertEqual(kept['title'], 'Series')        # and nothing else is lost
-
-    def test_a_file_without_a_folder_migrates_to_the_empty_folder(self):
-        self.write_v1({'version': 1, 'links': {'http://s/A': {}}, 'files': {}})
-        state = State(self.path)
-        self.assertIn('http://s/A\t', state.data['links'])
 
 
 class TestStateKeyCannotHideWork(RunLinkHarness):

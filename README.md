@@ -100,15 +100,10 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | directory | holds |
 |---|---|
 | `~/.pikpakget/` | the login (`session.json`, 0600), the device id, and `config.json` |
-| `~/.pikpakget/` again | `state.json`, the single-instance lock and the log — while you are using the library named in `config.json` (or the built-in `~/Downloads/PikPak`) |
-| `<library>/.pikpakget/` | the same three files, once the library is **not** the remembered one |
+| `<library>/.pikpakget/` | `state.json`, the library lock named `lock`, and logs, including for the default library |
 
-Two rules behind that: a library is identified by its path, so pointing `--dest`
-somewhere new starts a second library rather than continuing the first; and a second
-library carries its **progress**, never its **login** — the credential stays in
-`~/.pikpakget`, so one `--login` serves every library. The journal follows a non-default
-library because that is the case where the volume is shared: a disk two machines mount
-has to answer "what have I already downloaded here" the same way from both.
+A library is identified by its path. Every library carries its own progress; account
+credentials stay in `~/.pikpakget/` on the device.
 
 ## What the quota actually behaves like
 
@@ -202,11 +197,8 @@ so a resumed run re-writes the same path instead of creating a second copy.
 
 The same lines printed to the terminal are appended to
 `grab-<date>.log` beside the journal, because a multi-day run outlives the terminal.
-`--log -` disables it. That directory also holds `state.json`, the session and the
-device id; it follows the user rather than the working directory on purpose, so
-progress and login are the same no matter where you run from. Nothing is written
-inside a clone any more, though `.gitignore` still covers a repo-local `.pikpakget/`
-left behind by older versions — and starting a run next to one of those says so.
+`--log -` disables it. That directory also holds `state.json` and the library lock.
+Credentials remain in the device's account directory.
 
 ## Verification
 
@@ -234,7 +226,7 @@ bytes are deleted; until then the record points at both.
 
 - `~/.pikpakget/` holds your session (`access_token`, single-use rotating
   `refresh_token`) and is in `.gitignore`; the session file is written `0600`.
-- A second library keeps its own `state.json` under `<library>/.pikpakget/` — the
+- Every library keeps its own `state.json` under `<library>/.pikpakget/` — the
   progress journal lists real share URLs, file ids and paths, so that name is ignored at
   every depth by `.gitignore` for the same reason. Never commit one.
   `--logout` deletes it.
@@ -251,7 +243,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     165 on the pure logic; no account, no network
+tests/test_pure.py     159 on the pure logic; no account, no network
 tests/test_transfer.py   5 real transfers over local HTTP, with real curl
 ```
 

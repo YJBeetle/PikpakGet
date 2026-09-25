@@ -161,23 +161,18 @@ id，你自己放的文件和目录一律不碰（`--no-sweep` 可关闭）。
 ## 日志
 
 终端里看到的同样内容会追加到进度目录里的 `grab-<日期>.log` —— 因为多天的任务活得
-比终端久。`--log -` 可以关掉。位置规则见下面《目录放在哪儿》：默认库的一切都在
-`~/.pikpakget/`，换库时跟着库走的只有进度、锁和日志。仓库目录里现在什么都不写；
-`.gitignore` 仍然覆盖旧版本留下的仓库内 `.pikpakget/`，而且旁边有那样一份旧进度时，
-启动会主动说一声。
+比终端久。`--log -` 可以关掉。每个库的进度、锁和日志都在 `<库>/.pikpakget/`。
+仓库目录里现在什么都不写。
 
 ## 目录放在哪儿
 
 | 目录 | 装什么 |
 |---|---|
 | `~/.pikpakget/` | 会话（`session.json`，0600）、设备号、`config.json` |
-| `~/.pikpakget/`（同一处） | `state.json`、单实例锁、日志 —— 只要用的是 `config.json` 里记的那个库（或内置默认 `~/Downloads/PikPak`） |
-| `<库>/.pikpakget/` | 用的库不是"记住的那个"时，这三样改放这里 |
+| `<库>/.pikpakget/` | `state.json`、单实例锁 `lock`、日志；默认库也一样 |
 
 背后两条规则：库靠路径识别，所以把 `--dest` 指到新地方就是开第二个库，而不是接着跑；
-第二个库只带走**进度**，带不走**登录** —— 会话始终在 `~/.pikpakget/`，一次 `--login`
-对所有库有效。进度跟着非默认库走，是因为那正是"盘被两台机器共用"的情形：同一块盘
-必须能回答"这里已经下过什么"，而且两边答案一样。
+每个库带着自己的**进度**，登录数据则留在设备上的 `~/.pikpakget/`。
 
 ## 完整性校验
 
@@ -216,7 +211,7 @@ pikpakget/api.py       HTTP 客户端：会话、验证码签名、分享/云盘
 pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
-tests/test_pure.py     165 项纯逻辑测试；不涉及账号、不联网
+tests/test_pure.py     159 项纯逻辑测试；不涉及账号、不联网
 tests/test_transfer.py   5 项真下载测试：本地 HTTP + 真 curl
 ```
 

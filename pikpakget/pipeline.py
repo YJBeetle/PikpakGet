@@ -80,40 +80,6 @@ def _clip_bytes(text, limit):
     return encoded[:limit].decode('utf-8', 'ignore')
 
 
-def migrate_state(data):
-    """Rewrite a v1 state file, whose links were keyed by bare share URL.
-
-    Links are now keyed by URL plus folder, so an unmigrated file leaves the old
-    records unreachable: the end-of-link check finds nothing pending and declares a
-    barely-started link done, which silently under-downloads."""
-    remap = {}
-    links = {}
-    for key, info in (data.get('links') or {}).items():
-        if '\t' in key:
-            links[key] = info
-        else:
-            target = f"{key}\t{info.get('folder') or ''}"
-            remap[key] = target
-            links.setdefault(target, info)
-    # the record already filed under the new key is the later word; a legacy record
-    # for the same link only supplies fields it never had
-    for key, info in (data.get('links') or {}).items():
-        if '\t' in key:
-            continue
-        target = links[remap[key]]
-        if target is info:
-            continue
-        for field, value in info.items():
-            if target.get(field) is None and value is not None:
-                target[field] = value
-    for record in (data.get('files') or {}).values():
-        if record.get('url') in remap:
-            record['url'] = remap[record['url']]
-    data['links'] = links
-    data['version'] = STATE_VERSION
-    return data
-
-
 def size_on_disk(path):
     """Size of a local file, or None when it is not there.
 
@@ -240,17 +206,18 @@ class State:
             try:
                 with open(path, encoding='utf-8') as handle:
                     loaded = json.load(handle)
-                if loaded.get('version') == STATE_VERSION and isinstance(loaded.get('files'), dict):
-                    self.data = loaded
-                elif loaded.get('version') == 1 and isinstance(loaded.get('links'), dict):
-                    self.data = migrate_state(loaded)
-                    self.save()
             except (ValueError, OSError) as error:
                 backup = f'{path}.corrupt-{time.strftime("%Y%m%d-%H%M%S")}'
                 shutil.copy2(path, backup)
                 # stderr, so it cannot pollute a machine-read progress listing
                 print(f'状态文件无法解析（{error}），已备份到 {backup}，本次从头规划',
                       file=sys.stderr)
+            else:
+                if not isinstance(loaded, dict) or loaded.get('version') != STATE_VERSION:
+                    raise PikPakError(f'状态版本不受支持：{path}；请自行移走旧文件后重跑')
+                if not isinstance(loaded.get('links'), dict) or not isinstance(loaded.get('files'), dict):
+                    raise PikPakError(f'状态结构不完整：{path}；请先检查文件')
+                self.data = loaded
 
     def link(self, url):
         return self.data['links'].setdefault(url, {'status': 'pending', 'attempts': 0})
@@ -563,9 +530,9 @@ class Pipeline:
         seg_dir = f'{part}.segs{self.args.connections}'
         # a half-finished single-stream .part keeps its progress: resume it as-is
         # instead of restarting the file over segments
-        legacy = (os.path.exists(part) and os.path.getsize(part) > 0
-                  and not os.path.isdir(seg_dir))
-        if self.args.connections > 1 and expected and not legacy:
+        partial_stream = (os.path.exists(part) and os.path.getsize(part) > 0
+                          and not os.path.isdir(seg_dir))
+        if self.args.connections > 1 and expected and not partial_stream:
             try:
                 got = download_segments(lambda: self.client.download_url(file_id)[0], part,
                                         expected, self.args.connections, stop=self.stop,

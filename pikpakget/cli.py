@@ -66,15 +66,8 @@ def remembered_dest():
 
 
 def state_dir_for(dest, remembered):
-    """Where `state.json`, the lock and the logs of one library live.
-
-    The remembered library keeps its journal in `~/.pikpakget`, exactly as it always
-    did: pointing `--status` at `~/Downloads` should not create that directory just to
-    ask a question. Any *other* library carries its own journal, because that is the
-    case where the volume is the shared thing — a disk two machines mount has to answer
-    "what have I already downloaded here" the same way from both."""
-    return (account_dir() if os.path.abspath(dest) == os.path.abspath(remembered)
-            else os.path.join(os.path.abspath(dest), DOT_DIR_NAME))
+    """Every library owns its journal and lock, including the remembered library."""
+    return os.path.join(os.path.abspath(dest), DOT_DIR_NAME)
 
 
 def resolve_dirs(args):
@@ -138,7 +131,7 @@ def write_config(pairs):
     print(f'已写入 {path}：'
           + (f'dest={stored["dest"]}' if stored else '已清空，回到 ~/Downloads/PikPak'))
     # the remembered library is by definition the one whose journal stays in home
-    print(f'不带 --dest 就跑这个库，进度记在 {account_dir()}')
+    print(f'不带 --dest 就跑这个库，进度记在 {os.path.join(stored.get("dest", default_dest()), DOT_DIR_NAME)}')
     return 0
 
 
@@ -212,40 +205,16 @@ def build_parser():
     return parser
 
 
-def _warn_about_legacy_state(args, log):
-    """Point at a login or a journal this run is not reading.
-
-    The two have different homes now — the session always belongs to the account
-    directory, the journal to whichever library is in use — so each is compared against
-    its own home rather than one list of candidate directories. The repo-local
-    `.pikpakget/` the cwd-relative default used to write is searched for both, because
-    that is where every one of these files used to live."""
-    repo = os.path.join(os.path.abspath(os.getcwd()), DOT_DIR_NAME)
-    library = os.path.join(os.path.abspath(args.dest), DOT_DIR_NAME)
-    journal = os.path.abspath(args.state_dir)
-    login = os.path.abspath(args.account_dir)
-    for name, what, here, there in (
-            ('state.json', '下载进度', journal, repo),
-            ('state.json', '下载进度', journal, library),
-            ('state.json', '下载进度', journal, login),
-            ('session.json', '登录会话', login, repo),
-            ('session.json', '登录会话', login, library)):
-        if here == there or os.path.exists(os.path.join(here, name)):
-            continue                    # the same directory, or ours already has one
-        found = os.path.join(there, name)
-        if os.path.exists(found):
-            log(f'注意到 {found} 里有{what}，本次读的是 {os.path.join(here, name)}；'
-                '要认那份就把它挪过去，或者把 --dest 指回那个库', 'warn')
-
-
 def _acquire_lock(state_dir):
     os.makedirs(state_dir, exist_ok=True)
-    handle = open(os.path.join(state_dir, 'grab.lock'), 'w')
+    handle = open(os.path.join(state_dir, 'lock'), 'a+')
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         handle.close()
         return None
+    handle.seek(0)
+    handle.truncate()
     handle.write(str(os.getpid()))
     handle.flush()
     return handle
@@ -288,7 +257,6 @@ def main(argv=None):
 
 
 def _commands(args, log):
-    _warn_about_legacy_state(args, log)
     try:
         # the login and the device id belong to the account, so they stay in home even
         # when this library carries its journal elsewhere: a second --dest must not mean
