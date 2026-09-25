@@ -119,6 +119,12 @@ Measured on a free account, and worth knowing before you plan a large run:
   gives back the attempt the file had just spent, so the next run has its full budget.
   Re-run the same command later: an hour is enough to be polite, past midnight is
   enough to be sure.
+- **A refused login is usually your egress address, not your password.** PikPak answers
+  `AccessProhibited` (HTTP 400) outright — reproduced on a machine whose direct address
+  was refused and which signed in seconds later behind a different exit. Standard
+  `*_proxy` environment variables are honoured by both halves of the tool (the API over
+  `urllib`, the segments over `curl`), and a proxied transfer counts against the same
+  daily cap.
 - **Throughput is shaped per account, not per connection.** A single connection
   measured 0.13–0.7 MiB/s over the course of a long run (it drifts down with time of
   day). Four ranged segments measured ~0.25 MiB/s in aggregate, with two of the four
@@ -223,7 +229,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     143 on the pure logic; no account, no network
+tests/test_pure.py     145 on the pure logic; no account, no network
 tests/test_transfer.py   5 real transfers over local HTTP, with real curl
 ```
 
