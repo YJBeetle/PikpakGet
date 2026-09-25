@@ -118,13 +118,28 @@ def main(argv=None):
         print('单实例锁依赖 POSIX 的 fcntl，Windows 上不支持：请在 WSL 或 Linux/macOS 里运行',
               file=sys.stderr)
         return 2
-    os.makedirs(args.state_dir, exist_ok=True)
+    # a preflight that dies on the very problem it is meant to report is useless, so
+    # --doctor neither creates the state directory nor writes a log into it
+    try:
+        os.makedirs(args.state_dir, exist_ok=True)
+    except OSError as error:
+        if not args.doctor:
+            print(f'状态目录不可用：{args.state_dir}（{error}）', file=sys.stderr)
+            return 2
     # an unattended run outlives the terminal, so the same lines that scroll past
     # are kept on disk (stdout stays the primary output)
-    log = Log(os.path.join(args.state_dir, f'grab-{time.strftime("%Y-%m-%d")}.log'),
-              args.quiet) if args.log != '-' else Log(quiet=args.quiet)
-    client = Client(session_path=os.path.join(args.state_dir, 'session.json'),
-                    device_id_path=os.path.join(args.state_dir, 'device_id'), logger=log)
+    log = (Log(quiet=args.quiet) if args.doctor or args.log == '-'
+           else Log(os.path.join(args.state_dir, f'grab-{time.strftime("%Y-%m-%d")}.log'),
+                    args.quiet))
+    try:
+        client = Client(session_path=os.path.join(args.state_dir, 'session.json'),
+                        device_id_path=os.path.join(args.state_dir, 'device_id'), logger=log)
+    except OSError as error:
+        # the device id is written into the state directory, so an unusable one fails
+        # here rather than in whatever call happens to need it first — and a device id
+        # that silently became random would change how the account looks to PikPak
+        print(f'状态目录不可用：{args.state_dir}（{error}）', file=sys.stderr)
+        return 1 if args.doctor else 2
     if args.login:
         password = (sys.stdin.read().strip() if args.password_stdin
                     else getpass.getpass('PikPak password: '))

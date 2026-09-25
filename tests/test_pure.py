@@ -477,6 +477,66 @@ class TestPipelineStartup(unittest.TestCase):
         self.assertEqual(pipeline.used_names[key], 'done.mp4')
 
 
+class TestPreflightSurvivesItsOwnSubject(unittest.TestCase):
+    """The first real invocation of `--doctor` on a fresh machine was `--dest
+    /volume1/...` on a box with no such path, and the preflight died in a traceback
+    instead of reporting the thing it exists to report."""
+
+    def setUp(self):
+        import pikpakget.cli as cli
+        self.cli = cli
+        self.dir = tempfile.mkdtemp()
+        blocker = os.path.join(self.dir, 'afile')
+        with open(blocker, 'wb'):
+            pass
+        self.unusable = os.path.join(blocker, 'sub')       # cannot exist: parent is a file
+
+    def test_doctor_reports_an_unusable_state_directory_instead_of_crashing(self):
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            code = self.cli.main(['--doctor', '--dest', self.unusable,
+                                  '--state-dir', self.unusable])
+        self.assertEqual(code, 1)
+        self.assertIn('状态目录不可用', buffer.getvalue())
+
+    def test_an_ordinary_run_refuses_with_an_exit_code_not_a_traceback(self):
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            code = self.cli.main(['--status', '--state-dir', self.unusable])
+        self.assertEqual(code, 2)
+        self.assertIn('状态目录不可用', buffer.getvalue())
+
+    def test_doctor_creates_a_directory_a_run_would_have_created(self):
+        import contextlib
+        import io
+        from pikpakget.pipeline import Log, Pipeline
+        import argparse
+        dest = os.path.join(self.dir, 'new', 'library')
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'), dest=dest,
+                                  max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
+                                  inventory_only=False, limit=0, purge_trash=False,
+                                  no_delete=True, no_sweep=True, doctor=False)
+        pipeline = Pipeline(args, Log(quiet=True))
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            pipeline.doctor()
+        self.assertTrue(os.path.isdir(dest), buffer.getvalue())
+        self.assertIn('已创建', buffer.getvalue())
+
+    def test_run_refuses_an_unbuildable_destination(self):
+        import argparse
+        from pikpakget.pipeline import Log, Pipeline
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state2'),
+                                  dest=self.unusable, max_files=0, connections=1, gap=0,
+                                  repeat=0, dry_run=False, inventory_only=False, limit=0,
+                                  purge_trash=False, no_delete=True, no_sweep=True)
+        self.assertEqual(Pipeline(args, Log(quiet=True)).run([]), 2)
+
+
 class TestDoctor(RunLinkHarness):
     """`--doctor` is what a user runs on a machine nobody has tested on, so its own
     verdicts have to be right: an absent curl with --connections 4 is a failure, a

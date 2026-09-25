@@ -16,6 +16,13 @@ line and module APIs may change between releases.
   when something blocks a long run.
 
 ### Fixed
+- **`--doctor` crashed on the exact problem it exists to report.** The first real
+  invocation pointed `--dest`/`--state-dir` at a path that could not be created, and the
+  startup path raised `PermissionError` from `os.makedirs` — twice over, since the state
+  directory is created by the CLI, by `Client` for the device id, and by `run()` for the
+  destination. All three now report one clear line and exit (1 for the preflight, 2 for a
+  run); the preflight additionally creates a directory a run would have created anyway,
+  and says it did.
 - **Constructing the pipeline died on any state that had finished files.** The
   case-folding flag was initialised after the loop that reads it, so a resumed run —
   i.e. every real run after the first — raised `AttributeError` before doing anything.

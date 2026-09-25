@@ -852,7 +852,11 @@ class Pipeline:
         return True
 
     def run(self, jobs):
-        os.makedirs(self.args.dest, exist_ok=True)
+        try:
+            os.makedirs(self.args.dest, exist_ok=True)
+        except OSError as error:
+            self.log(f'目标目录建不出来：{self.args.dest}（{error}）', 'error')
+            return 2
         if not os.access(self.args.dest, os.W_OK):
             self.log(f'目标目录不可写: {self.args.dest}', 'error')
             return 2
@@ -977,15 +981,21 @@ class Pipeline:
                   '单流用 urllib，不需要 curl' if not curl else curl)
         for label, path, needs_space in (
                 ('目标目录', self.args.dest, True), ('状态目录', self.args.state_dir, False)):
-            probe = path if os.path.isdir(path) else os.path.dirname(os.path.abspath(path))
             if not os.path.isdir(path):
-                check(label, 'warn', f'{path} 还不存在（运行时会创建）')
-            elif not os.access(path, os.W_OK):
+                # creating it is what a run would do anyway; doing it here turns
+                # "no such path" into a reported failure instead of a traceback
+                try:
+                    os.makedirs(path, exist_ok=True)
+                except OSError as error:
+                    check(label, 'FAIL', f'{path} 建不出来：{error}')
+                    continue
+                check(label, 'ok', f'{path} 已创建')
+            if not os.access(path, os.W_OK):
                 check(label, 'FAIL', f'{path} 不可写')
-            else:
-                check(label, 'ok', f'{path} 可写')
-            if needs_space and os.path.isdir(probe):
-                free = shutil.disk_usage(probe).free
+                continue
+            check(label, 'ok', f'{path} 可写')
+            if needs_space:
+                free = shutil.disk_usage(path).free
                 check('剩余空间', 'ok' if free >= LOCAL_HEADROOM else 'FAIL',
                       f'{human(free)} 可用，{label}所在卷至少需要 {human(LOCAL_HEADROOM)}')
         records = self.state.data['files']
