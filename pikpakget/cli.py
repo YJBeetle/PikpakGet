@@ -37,7 +37,8 @@ def build_parser():
                     'working around a small cloud quota.')
     parser.add_argument('links', nargs='?', help='text file, one share link per line '
                                                  '(optionally "<url>\\t<folder>")')
-    parser.add_argument('--login', metavar='USERNAME', help='sign in and store a '
+    parser.add_argument('--login', metavar='USERNAME', nargs='?', const='',
+                        help='sign in and store a '
                                                             'refreshable session')
     parser.add_argument('--password-stdin', action='store_true',
                         help='read the password from stdin instead of a prompt')
@@ -176,10 +177,21 @@ def _commands(args, log):
     # session, a refused login, a blocked account — and a Python traceback says
     # nothing more useful than the one line we can print; only a real bug earns one
     try:
-        if args.login:
+        if args.login is not None:
+            account = args.login
+            if not account:
+                # `--login` on its own is what people type; argparse's usage dump when
+                # the value is missing is not an answer, but a piped or scripted call
+                # has nobody to answer a prompt, so that case stays an error
+                if sys.stdin.isatty():
+                    account = input('PikPak 账号（邮箱/手机号/用户名）: ').strip()
+                if not account:
+                    print('--login 需要账号：--login <邮箱>，或在交互式终端里直接运行',
+                          file=sys.stderr)
+                    return 2
             password = (sys.stdin.read().strip() if args.password_stdin
-                        else getpass.getpass('PikPak password: '))
-            client.sign_in(args.login, password)
+                        else getpass.getpass('PikPak 密码: '))
+            client.sign_in(account, password)
             return 0
         if args.logout:
             client.session.forget()

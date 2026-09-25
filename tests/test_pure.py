@@ -518,6 +518,64 @@ class TestStatusWithoutProgress(unittest.TestCase):
         self.assertIn('云盘', buffer.getvalue())
 
 
+class TestLoginNeedsNoArgument(unittest.TestCase):
+    """`--login` with no value is the first thing anyone types; argparse answered it
+    with an English usage dump, which is not a reply to a question about the account."""
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def sign_in(self, account, password):
+            LoginCalls.append((account, password))
+
+    def setUp(self):
+        import unittest.mock
+        global LoginCalls
+        LoginCalls = []
+        import pikpakget.cli as cli
+        self.cli = cli
+        self.patch = unittest.mock.patch.object(cli, 'Client', TestLoginNeedsNoArgument.FakeClient)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        self.getpass = unittest.mock.patch.object(cli.getpass, 'getpass', lambda prompt: 'pw')
+        self.getpass.start()
+        self.addCleanup(self.getpass.stop)
+
+    def fake_stdin(self, tty):
+        import types
+        return types.SimpleNamespace(isatty=lambda: tty, read=lambda: 'pw\n')
+
+    def test_a_tty_gets_asked_for_the_account(self):
+        import sys
+        import unittest.mock
+        with unittest.mock.patch.object(sys, 'stdin', self.fake_stdin(True)), \
+                unittest.mock.patch('builtins.input', lambda prompt: 'typed@example.com'):
+            self.assertEqual(self.cli.main(['--login', '--state-dir', tempfile.mkdtemp(),
+                                            '--dest', tempfile.mkdtemp()]), 0)
+        self.assertEqual(LoginCalls, [('typed@example.com', 'pw')])
+
+    def test_a_scripted_call_without_a_terminal_says_so(self):
+        import contextlib
+        import io
+        import sys
+        import unittest.mock
+        buffer = io.StringIO()
+        with unittest.mock.patch.object(sys, 'stdin', self.fake_stdin(False)), \
+                contextlib.redirect_stderr(buffer):
+            code = self.cli.main(['--login', '--state-dir', tempfile.mkdtemp(),
+                                  '--dest', tempfile.mkdtemp()])
+        self.assertEqual(code, 2)
+        text = buffer.getvalue()
+        self.assertIn('需要账号', text)
+        self.assertNotIn('usage:', text, 'no argparse dump')
+
+    def test_an_account_on_the_command_line_still_works(self):
+        self.assertEqual(self.cli.main(['--login', 'given@example.com', '--state-dir',
+                                        tempfile.mkdtemp(), '--dest', tempfile.mkdtemp()]), 0)
+        self.assertEqual(LoginCalls, [('given@example.com', 'pw')])
+
+
 class TestLogCloses(unittest.TestCase):
     """main() opens the log and now closes it on every path; a library caller keeps
     writing to the one it made, so closing must be safe twice and writing after close
