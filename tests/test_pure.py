@@ -617,6 +617,16 @@ class TestLogCloses(unittest.TestCase):
         with open(path, encoding='utf-8') as handle:
             self.assertIn('一条', handle.read())
 
+    def test_log_is_private_even_when_it_already_exists(self):
+        from pikpakget.pipeline import Log
+        path = os.path.join(tempfile.mkdtemp(), 'grab.log')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('old\n')
+        os.chmod(path, 0o644)
+        log = Log(path)
+        log.close()
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
 
 class TestErrorsAreReadable(unittest.TestCase):
     """`--whoami` without a session was a wall of traceback. A refused command is
@@ -1795,6 +1805,22 @@ class TestState(unittest.TestCase):
         with open(self.path) as handle:
             json.load(handle)
         self.assertFalse(os.path.exists(self.path + '.tmp'))
+
+    def test_state_and_corrupt_backup_are_private(self):
+        state = State(self.path)
+        state.save()
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+        with open(self.path, 'w', encoding='utf-8') as handle:
+            handle.write('{broken')
+        os.chmod(self.path, 0o644)
+        State(self.path)
+        backup = next(name for name in os.listdir(self.dir) if '.corrupt-' in name)
+        self.assertEqual(os.stat(os.path.join(self.dir, backup)).st_mode & 0o777, 0o600)
+
+    def test_new_state_directory_is_private(self):
+        directory = os.path.join(self.dir, '.pikpakget')
+        State(os.path.join(directory, 'state.json')).save()
+        self.assertEqual(os.stat(directory).st_mode & 0o777, 0o700)
 
 
 class TestSignInDiagnostics(unittest.TestCase):

@@ -206,8 +206,10 @@ def build_parser():
 
 
 def _acquire_lock(state_dir):
-    os.makedirs(state_dir, exist_ok=True)
-    handle = open(os.path.join(state_dir, 'lock'), 'a+')
+    os.makedirs(state_dir, mode=0o700, exist_ok=True)
+    descriptor = os.open(os.path.join(state_dir, 'lock'), os.O_RDWR | os.O_CREAT, 0o600)
+    os.fchmod(descriptor, 0o600)
+    handle = os.fdopen(descriptor, 'r+')
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -238,7 +240,7 @@ def main(argv=None):
                 or args.login is not None or args.logout or args.dry_run or args.inventory_only)
     if not readonly:
         try:
-            os.makedirs(args.state_dir, exist_ok=True)
+            os.makedirs(args.state_dir, mode=0o700, exist_ok=True)
         except OSError as error:
             print(f'进度目录不可用：{args.state_dir}（{error}）', file=sys.stderr)
             return 2

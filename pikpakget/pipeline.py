@@ -16,6 +16,7 @@ import re
 import itertools
 import shutil
 import sys
+import tempfile
 import time
 
 from .api import (DOT_DIR_NAME, Client, PikPakError, TrafficCapped, account_dir,
@@ -175,8 +176,10 @@ class Log:
         self.quiet = quiet
         self.handle = None
         if path:
-            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-            self.handle = open(path, 'a', encoding='utf-8')
+            os.makedirs(os.path.dirname(path) or '.', mode=0o700, exist_ok=True)
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            os.fchmod(descriptor, 0o600)
+            self.handle = os.fdopen(descriptor, 'a', encoding='utf-8')
 
     def close(self):
         # idempotent: main closes the log it opened on every exit path, while a
@@ -212,7 +215,10 @@ class State:
                     loaded = json.load(handle)
             except (ValueError, OSError) as error:
                 backup = f'{path}.corrupt-{time.strftime("%Y%m%d-%H%M%S")}'
-                shutil.copy2(path, backup)
+                descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with open(path, 'rb') as source, os.fdopen(descriptor, 'wb') as target:
+                    os.fchmod(target.fileno(), 0o600)
+                    shutil.copyfileobj(source, target)
                 # stderr, so it cannot pollute a machine-read progress listing
                 print(f'状态文件无法解析（{error}），已备份到 {backup}，本次从头规划',
                       file=sys.stderr)
@@ -258,14 +264,19 @@ class State:
                 info['attempts'] = 0
 
     def save(self):
-        os.makedirs(os.path.dirname(self.path) or '.', exist_ok=True)
+        directory = os.path.dirname(self.path) or '.'
+        os.makedirs(directory, mode=0o700, exist_ok=True)
         self.data['updated'] = time.strftime('%Y-%m-%d %H:%M:%S')
-        tmp = f'{self.path}.tmp'
-        with open(tmp, 'w', encoding='utf-8') as handle:
-            json.dump(self.data, handle, ensure_ascii=False, indent=1)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, self.path)
+        descriptor, tmp = tempfile.mkstemp(prefix='.state-', dir=directory)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+                json.dump(self.data, handle, ensure_ascii=False, indent=1)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, self.path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
 
 
 class Pipeline:

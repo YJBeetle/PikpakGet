@@ -10,7 +10,7 @@
 | `<library>/.pikpakget/state.json` | Share links, filenames, local paths, and progress. |
 | `<library>/.pikpakget/grab-*.log` | Output from the run, including share links and filenames. |
 
-Sessions and device IDs are written with `0600` permissions. Library progress and log files currently use the process's default permissions; use a restrictive `umask` or protect the library directory if other local users must not read them. Do not attach raw session, state, or log files to an issue; remove identifying links, paths, and tokens first. A simple URL replacement is not enough to sanitize an entire log.
+Sessions, device IDs, progress, logs, and the local library lock are written with `0600` permissions. Newly created library metadata directories use `0700`. If an existing `<library>/.pikpakget` directory was created with broader permissions, restrict that directory yourself. Do not attach raw session, state, or log files to an issue; remove identifying links, paths, and tokens first. A simple URL replacement is not enough to sanitize an entire log.
 
 The constants named `CLIENT_ID` and `CLIENT_SECRET` in `pikpakget/api.py` identify the application, not your account. Your account credentials are the password you enter at login and the tokens saved in `session.json`.
 
