@@ -36,7 +36,7 @@ DEFAULT_DEST = os.path.join('~', 'Downloads', 'PikPak')
 
 
 def account_dir():
-    """`~/.pikpakget`: the login, the device id and `config.json`.
+    """`~/.pikpakget`: account registry, sessions, device id and config.
 
     Never derived from `--dest` — a second library on another volume brings its progress
     journal, not its credentials. `PIKPAKGET_HOME` redirects it so a test can exercise a
@@ -228,6 +228,7 @@ class Client:
         self.log = logger or (lambda message, level='info': None)
         self.timeout = timeout
         self.session = Session(session_path)
+        self.device_id_path = device_id_path
         self.device_id = load_device_id(device_id_path) if device_id_path else uuid.uuid4().hex
         self._captchas = {}
         self._requests = 0
@@ -270,15 +271,16 @@ class Client:
                 # neither and is how a soft refusal becomes real risk control.
                 hint = ('（服务端拒绝的是"登录"这个动作本身，不代表密码错。先试换一个出口地址：'
                         f'API 与分段下载都读 *_proxy 环境变量；或把已登录机器上 '
-                        f'{os.path.join(os.path.dirname(self.session.path), "device_id")} '
+                        f'{self.device_id_path or os.path.join(account_dir(), "device_id")} '
                         '这个设备号复制过来。别连续重试，那可能升级成真风控。）')
             raise PikPakError(f'登录失败: {detail}{hint}\n服务端原文: {_safe_body(body)}',
                               status=status, action='signin')
-        self.session.store(self._token_record(body))
-        # the path belongs in the message: one session serves every library, so when a
-        # later run reports "no session" this is the line that says which account
-        # directory it should have been looking at"
-        self.log(f'登录成功，会话已保存到 {self.session.path}（权限 600）')
+        record = self._token_record(body)
+        record['sub'] = record.get('sub') or self.session.user_id
+        self.session.store(record)
+        # A persistent client names the session file in its login message.
+        if self.session.path:
+            self.log(f'登录成功，会话已保存到 {self.session.path}（权限 600）')
         return self.session.data
 
     @staticmethod
@@ -302,14 +304,16 @@ class Client:
             self.session_dead = status is not None and 400 <= status < 500
             raise PikPakError(f'会话续期失败: {body.get("error_description") or body}（请重新登录）',
                               status=status, action='refresh')
-        self.session.store(self._token_record(body))
+        record = self._token_record(body)
+        record['sub'] = record.get('sub') or self.session.user_id
+        self.session.store(record)
         self.session_dead = False
         self.log('会话已自动续期')
 
     def ensure_session(self, force=False):
         if not self.session.access_token:
             raise PikPakError(f'还没有登录：{self.session.path} 里没有会话。'
-                              f'先运行 --login（所有库共用这一份会话）',
+                              '先运行 --login',
                               action='session')
         if force or not self.session.valid(TOKEN_REFRESH_MARGIN):
             self.refresh()
@@ -437,6 +441,41 @@ class Client:
             'parent_id': parent_id, 'limit': 200, 'order': 3,
             'filters': json.dumps({'trashed': {'eq': bool(trashed)}}), 'with_audit': 'true'}))
 
+    def create_folder(self, name, parent_id='*'):
+        return self.call('POST', '/v1/files', json_body={
+            'kind': 'drive#folder', 'name': name, 'parent_id': parent_id})
+
+    def prepare_workspace(self, name=DOT_DIR_NAME):
+        """Own one dedicated cloud folder and clear it before a download run.
+
+        A duplicate same-name folder makes identity ambiguous, so fail closed.
+        The folder itself survives; only its immediate children are permanently
+        deleted. PikPak deletes a folder subtree when its folder id is deleted.
+        """
+        folders = [item for item in self.list_folder('*')
+                   if item.get('name') == name and item.get('kind') == 'drive#folder']
+        if len(folders) > 1:
+            raise PikPakError(f'网盘根目录有多个 {name} 文件夹，请先整理到只剩一个')
+        if folders:
+            folder_id = folders[0]['id']
+        else:
+            created = self.create_folder(name)
+            folder_id = (created.get('file') or created).get('id')
+            if not folder_id:
+                raise PikPakError(f'创建网盘文件夹 {name} 后没有收到 ID')
+        children = self.list_folder(folder_id)
+        if children:
+            self.cleanup([item['id'] for item in children])
+            deadline = time.monotonic() + 150
+            while True:
+                remaining = self.list_folder(folder_id)
+                if not remaining:
+                    break
+                if time.monotonic() >= deadline:
+                    raise PikPakError(f'网盘文件夹 {name} 清理后仍有 {len(remaining)} 项，停止使用此账号')
+                time.sleep(4)
+        return folder_id
+
     def list_trash(self):
         return list(self._paginate('/v1/files', {'parent_id': '*', 'limit': 200,
                                                  'trashed': 'true', 'order': 3}))
@@ -500,7 +539,7 @@ class Client:
                     break
         return {'share_id': share_id, 'title': info.get('title'), 'pass_code_token': token,
                 'file_num': info.get('file_num'), 'nodes': nodes,
-                'truncated': bool(queue)}
+                'truncated': bool(queue) or len(nodes) >= max_nodes}
 
     # ------------------------------------------------------------------- change
     def restore(self, share_id, pass_code_token, file_ids, parent_id='*'):
