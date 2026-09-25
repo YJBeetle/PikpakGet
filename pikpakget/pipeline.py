@@ -228,7 +228,8 @@ class State:
     def file(self, file_id, url=None):
         return self.data['files'].setdefault(file_id, {
             'state': 'pending', 'attempts': 0, 'url': url, 'restored_id': None,
-            'local': None, 'size': 0, 'seconds': None, 'error': None})
+            'local': None, 'home': None, 'quarantined': None,
+            'size': 0, 'seconds': None, 'error': None})
 
     def files_of(self, url):
         return [rec for rec in self.data['files'].values() if rec.get('url') == url]
@@ -569,14 +570,18 @@ class Pipeline:
                     piece = verify_content(local, node['hash'], self.hash_sizes(record))
                 if piece is None:
                     self.quarantine(local, f"云端 {node['hash'][:16]}… 无候选分片命中", record)
-                    record.update({'state': 'pending', 'local': None, 'attempts': 0})
+                    # running --verify *is* the ask to fix it: the record goes back into
+                    # the queue under its real name, while `quarantined` keeps the old
+                    # bytes reachable until a good copy replaces them
+                    record.update({'state': 'pending', 'local': record['home'], 'attempts': 0})
                     suspect.append(node['name'])
                     continue
                 record.update({'hash_piece': piece, 'state': 'done', 'error': None})
-                if local.endswith(QUARANTINE_SUFFIX):
-                    home = local[:-len(QUARANTINE_SUFFIX)]
+                if record.get('quarantined') == local:
+                    home = record['home']
                     os.replace(local, home)
                     record['local'] = home
+                    record['quarantined'] = None
                     self.log(f'  隔离的文件复核通过，放回 {os.path.basename(home)[:52]}')
                 checked += 1
         self.state.save()
@@ -597,21 +602,29 @@ class Pipeline:
                 return (size, *(candidate for candidate in PIECE_SIZES if candidate != size))
         return PIECE_SIZES
 
-    def quarantine(self, path, reason, record=None):
+    def quarantine(self, path, reason, record=None, home=None):
         """Move bytes the server's hash does not explain out of the way **without
-        deleting them**.
+        deleting them**, and keep them reachable from the record.
 
         The hash rule is reverse engineered and the block size is the uploader's
         client's choice, so "no candidate reproduced it" is unproven rather than
         proven bad — and those bytes may be an hour of quota that nobody can fetch
-        again on a whim. The `.unverified` name is what a human sees in the folder."""
-        doomed = path + QUARANTINE_SUFFIX
+        again on a whim. The `.unverified` name is what a human sees in the folder.
+
+        `home` is the name the file is *supposed* to have. It has to be passed in
+        rather than derived from `path`: at download time the bytes are still in a
+        `.part`, and stripping the suffix later would hand the library a permanent
+        `movie.mp4.part` that `fetch_to` mistakes for resumable progress. The doomed
+        path also lives in its own record field, because a sweep that reported a file
+        and dropped the reference left orphans nobody could find again."""
+        home = home or path
+        doomed = home + QUARANTINE_SUFFIX
         if os.path.exists(doomed):
             doomed = f'{doomed}-{time.strftime("%Y%m%d-%H%M%S")}'
         os.replace(path, doomed)
         if record is not None:
-            record.update({'state': 'unverified', 'local': doomed, 'hash_piece': None,
-                           'error': reason[:300]})
+            record.update({'state': 'unverified', 'local': doomed, 'home': home,
+                           'quarantined': doomed, 'hash_piece': None, 'error': reason[:300]})
         self.log(f'内容核对不过（{reason}），字节保留为 {os.path.basename(doomed)}', 'error')
         return doomed
 
@@ -630,7 +643,7 @@ class Pipeline:
             if piece is None:
                 reason = f'云端 {expected[:16]}… 无候选分片命中'
                 if record is not None and record.get('attempts', 0) >= MAX_ATTEMPTS:
-                    return self.quarantine(part, reason, record), 'unverified'
+                    return self.quarantine(part, reason, record, home=final), 'unverified'
                 os.remove(part)
                 raise PikPakError(f'内容 hash 与云端不符（{reason}），丢弃重下')
             if record is not None:
@@ -704,8 +717,7 @@ class Pipeline:
                 # the quarantine was deleted: that is the ask to fetch it again
                 record['state'] = 'pending'
                 record['attempts'] = 0
-                if (record.get('local') or '').endswith(QUARANTINE_SUFFIX):
-                    record['local'] = record['local'][:-len(QUARANTINE_SUFFIX)]
+                record['local'] = record.get('home') or record.get('local')
             if record['state'] == 'downloaded' and size_on_disk(record.get('local')) == node['size']:
                 self.forget([record.get('restored_id')], node['size'])
                 record['state'] = 'done'
@@ -756,6 +768,13 @@ class Pipeline:
                 self.forget([restored], node['size'])
                 record['state'] = 'done'
                 record['error'] = None
+                # a good copy is in place, so the bytes we could not vouch for are now
+                # provably waste; drop them rather than leave a second copy forever
+                stale = record.get('quarantined')
+                if stale and os.path.exists(stale):
+                    os.remove(stale)
+                    self.log(f'  旧的未通过副本已清掉 {os.path.basename(stale)[:44]}')
+                record['quarantined'] = None
                 self.state.save()
                 self.files_done += 1
                 self.bytes_done += node['size']

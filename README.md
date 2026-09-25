@@ -30,8 +30,9 @@ cd PikpakGet
 python3 -m pikpakget --help          # run it in place
 pip install -e . && pikpakget --help  # or get a console script
 
-# or install a published release straight from its assets, no clone needed:
-# pip install https://github.com/YJBeetle/PikpakGet/releases/download/v0.1.3/pikpakget-0.1.3-py3-none-any.whl
+# or install a published release straight from its assets, no clone needed (assets are
+# attached from v0.1.4 on, since that is the first tag carrying the build workflow):
+# pip install https://github.com/YJBeetle/PikpakGet/releases/download/v<版本>/pikpakget-<版本>-py3-none-any.whl
 ```
 
 ## Use
@@ -200,7 +201,8 @@ refetches while attempts remain, and on the last one it **keeps the bytes** as
 that file to ask for another fetch. `--verify` re-checks the whole library: a
 quarantined file that now hashes out is moved back into place, and a healthy file that
 no longer does is quarantined and put back in the queue, so re-running the download
-command really is the fix.
+command really is the fix. Once the fresh copy verifies, the superseded quarantined
+bytes are deleted; until then the record points at both.
 
 ## Security notes
 
@@ -220,7 +222,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     128 tests on the pure logic; no account, no network
+tests/test_pure.py     129 tests on the pure logic; no account, no network
 ```
 
 ## Development

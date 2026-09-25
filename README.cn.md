@@ -28,8 +28,9 @@ cd PikpakGet
 python3 -m pikpakget --help           # 直接在仓库目录里跑
 pip install -e . && pikpakget --help  # 或者装成一个命令行工具
 
-# 也可以直接从 release 资产装，不必克隆：
-# pip install https://github.com/YJBeetle/PikpakGet/releases/download/v0.1.3/pikpakget-0.1.3-py3-none-any.whl
+# 也可以直接从 release 资产装，不必克隆（资产从 v0.1.4 起才随 tag 生成，因为那是第一个
+# 带上构建工作流的 tag）：
+# pip install https://github.com/YJBeetle/PikpakGet/releases/download/v<版本>/pikpakget-<版本>-py3-none-any.whl
 ```
 
 ## 使用
@@ -172,7 +173,8 @@ SHA-1"，切块大小由上传者当时用的客户端决定：26 个文件的�
 上界。它先在剩余重试次数内重下，最后一次仍不匹配就**保留字节**，改名成
 `<名字>.unverified`，记录里标成 unverified 并在日志里喊一声。想再要一次就去删掉那个
 隔离文件。`--verify` 会复核整个库：隔离的文件一旦算得出来就放回原名，原本算得出来的
-被隔离并退回队列 —— 所以"重跑下载命令"确实就是修复手段。
+被隔离并退回队列 —— 所以"重跑下载命令"确实就是修复手段。新的一份核对通过后，被它取代
+的隔离字节会被删掉；在那之前记录同时指向两份，不会留下没人引用的孤儿文件。
 
 ## 安全说明
 
@@ -190,7 +192,7 @@ pikpakget/api.py       HTTP 客户端：会话、验证码签名、分享/云盘
 pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
-tests/test_pure.py     128 项纯逻辑测试；不涉及账号、不联网
+tests/test_pure.py     129 项纯逻辑测试；不涉及账号、不联网
 ```
 
 ## 开发

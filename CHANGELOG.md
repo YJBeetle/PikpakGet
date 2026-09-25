@@ -26,7 +26,10 @@ line and module APIs may change between releases.
   left the record at `done`, so the next download run skipped it and the only repair
   path was editing `state.json` by hand. A suspect file is now quarantined and put back
   in the queue, and a quarantined file that hashes out at a later sweep is moved back
-  under its original name.
+  under its original name. Every path keeps the doomed bytes referenced by the record
+  (they were being renamed and then dropped, which let a second sweep report "all
+  green" over an orphan nobody could trace), and a copy that verifies replaces the
+  quarantined one it superseded.
 - **One unreadable share ended the whole `--verify` sweep.** A link whose listing
   fails is counted and skipped now, so the rest of the library still gets checked.
 - **A 5xx from the auth endpoint was treated as a dead session**, which stopped a

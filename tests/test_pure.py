@@ -271,6 +271,20 @@ class TestContentVerificationOnPromote(RunLinkHarness):
         self.assertEqual(record['state'], 'retry')
         self.assertIn('内容 hash', record['error'])
 
+    def test_a_refetch_replaces_the_quarantine_and_clears_the_reference(self):
+        doomed = os.path.join(self.lib, 'Series', 'a.mp4.unverified')
+        os.makedirs(os.path.dirname(doomed), exist_ok=True)
+        with open(doomed, 'wb') as handle:
+            handle.write(b'junk' * 25)
+        home = os.path.join(self.lib, 'Series', 'a.mp4')
+        self.pipeline.state.file('SHAREFILE1',
+                                 'https://mypikpak.com/s/EXAMPLEID1111111111\tSeries').update(
+            {'state': 'pending', 'local': home, 'home': home, 'quarantined': doomed})
+        self.assertEqual(self.run_one(size=100, digest=fold(b'\0' * 100, 1 << 20))[0], 'ok')
+        self.assertTrue(os.path.exists(home))
+        self.assertFalse(os.path.exists(doomed), 'the copy nobody could vouch for is gone')
+        self.assertIsNone(self.pipeline.state.file('SHAREFILE1')['quarantined'])
+
     def test_a_file_without_a_server_hash_still_lands(self):
         status, node = self.run_one(size=100)
         self.assertEqual(status, 'ok')
@@ -323,17 +337,22 @@ class TestVerifyMode(RunLinkHarness):
         self.assertFalse(os.path.exists(os.path.join(self.lib, 'Series', 'bad.mp4')))
         record = self.pipeline.state.file('F1')
         self.assertEqual(record['state'], 'pending', 'so the next download run replaces it')
-        self.assertIsNone(record['local'])
+        # the record keeps pointing at *both* copies: a sweep that renamed a file and
+        # then dropped the reference left orphans nobody could find again
+        self.assertEqual(record['local'], os.path.join(self.lib, 'Series', 'bad.mp4'))
+        self.assertEqual(record['quarantined'], doomed)
 
     def test_a_quarantined_file_that_now_hashes_out_is_moved_back(self):
         # the block-size candidate list will grow; a file parked because of a guess
         # should come home on its own once the guess covers it
         content = b'y' * 3000
         doomed = os.path.join(self.lib, 'Series', 'fixed.mp4.unverified')
+        home = os.path.join(self.lib, 'Series', 'fixed.mp4')
         job = self.seed_done('F1', 'fixed.mp4', content, fold(content, 1 << 20), local=doomed)
         with open(doomed, 'wb') as handle:
             handle.write(content)
-        self.pipeline.state.file('F1')['state'] = 'unverified'
+        self.pipeline.state.file('F1').update({'state': 'unverified', 'home': home,
+                                               'quarantined': doomed})
         self.assertEqual(self.pipeline.verify([job]), 0)
         self.assertTrue(os.path.exists(os.path.join(self.lib, 'Series', 'fixed.mp4')))
         self.assertFalse(os.path.exists(doomed))
@@ -1435,8 +1454,12 @@ class TestSessionVersusOneBadLink(RunLinkHarness):
         self.assertEqual(self.run_one(size=100, digest='0' * 40)[0], 'incomplete')
         record = self.pipeline.state.file('SHAREFILE1')
         self.assertEqual(record['state'], 'unverified')
-        self.assertTrue(record['local'].endswith('.unverified'))
         self.assertTrue(os.path.exists(record['local']), 'the bytes were kept')
+        # promote works on `<name>.mp4.part`; naming the quarantine after *that* path
+        # left the library with a permanent `.part` that fetch_to read as progress
+        self.assertEqual(os.path.basename(record['local']), 'a.mp4.unverified')
+        self.assertEqual(os.path.basename(record['home']), 'a.mp4')
+        self.assertEqual(record['quarantined'], record['local'])
 
     def test_a_quarantined_file_is_not_fetched_again_on_the_next_pass(self):
         self.run_one(size=100, digest='0' * 40)
