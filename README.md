@@ -249,7 +249,7 @@ pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
 tests/test_pure.py     153 on the pure logic; no real account or network
-tests/test_accounts.py   5 synthetic account and lock tests
+tests/test_accounts.py   6 synthetic account and lock tests
 tests/test_rotation.py   2 synthetic account rotation tests
 tests/test_transfer.py   5 real transfers over local HTTP, with real curl
 ```

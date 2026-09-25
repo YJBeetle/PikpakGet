@@ -41,6 +41,18 @@ class TestAccounts(unittest.TestCase):
         finally:
             first_lock.close()
 
+    def test_relogin_checks_known_account_lock_before_sign_in(self):
+        item = self.login('one@example.com', 'user-1')
+        registry = Accounts(self.home)
+        lock = registry.acquire(item)
+        try:
+            with mock.patch.object(Client, 'sign_in') as sign_in:
+                with self.assertRaisesRegex(PikPakError, '正在下载'):
+                    registry.login('one@example.com', 'synthetic-password')
+                sign_in.assert_not_called()
+        finally:
+            lock.close()
+
     def test_sessions_are_separate_and_private(self):
         first = self.login('one@example.com', 'user-1')
         second = self.login('two@example.com', 'user-2')
@@ -77,4 +89,3 @@ class TestCloudWorkspace(unittest.TestCase):
         with self.assertRaises(PikPakError):
             self.client.prepare_workspace()
         self.assertEqual(self.deleted, [])
-

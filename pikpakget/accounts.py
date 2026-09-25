@@ -33,45 +33,60 @@ class Accounts:
 
     def login(self, username, password, logger=None):
         # The server's user id, not the spelling of the login, identifies an account.
-        # The anonymous sign-in is kept in memory until that id is known.
-        client = Client(device_id_path=os.path.join(self.home, 'device_id'), logger=logger)
-        payload = client.sign_in(username, password)
-        user_id = payload.get('sub')
-        if not user_id:
-            raise PikPakError('登录响应没有用户 ID，无法安全保存多账号会话')
-        account_id = hashlib.sha256(str(user_id).encode()).hexdigest()[:24]
-        directory = self.directory(account_id)
-        os.makedirs(directory, mode=0o700, exist_ok=True)
-        item = {'id': account_id, 'label': username}
-        account_lock = self.acquire(item)
-        if account_lock is None:
+        # Lock an already known label before sign-in: issuing a fresh session
+        # while a download uses its old one can invalidate that active session.
+        known = [item for item in self.items if item['label'] == username]
+        if len(known) > 1:
+            raise PikPakError(f'账号名称 {username!r} 重复，请先用 --accounts 检查')
+        known_lock = self.acquire(known[0]) if known else None
+        if known and known_lock is None:
             raise PikPakError(f'账号 {username} 正在下载，稍后再登录')
+        account_lock = None
         try:
-            Session(os.path.join(directory, 'session.json')).store(payload)
-        finally:
-            account_lock.close()
-        os.makedirs(self.home, exist_ok=True)
-        registry_lock = open(os.path.join(self.home, 'accounts.lock'), 'a+')
-        try:
-            fcntl.flock(registry_lock, fcntl.LOCK_EX)
-            fresh = Accounts(self.home).items
-            for index, existing in enumerate(fresh):
-                if existing['id'] == account_id:
-                    fresh[index] = item
-                    break
+            # Keep the new session in memory until the server identity is known.
+            client = Client(device_id_path=os.path.join(self.home, 'device_id'), logger=logger)
+            payload = client.sign_in(username, password)
+            user_id = payload.get('sub')
+            if not user_id:
+                raise PikPakError('登录响应没有用户 ID，无法安全保存多账号会话')
+            account_id = hashlib.sha256(str(user_id).encode()).hexdigest()[:24]
+            directory = self.directory(account_id)
+            item = {'id': account_id, 'label': username}
+            if known and known[0]['id'] == account_id:
+                account_lock, known_lock = known_lock, None
             else:
-                fresh.append(item)
-            temporary = self.index + '.tmp'
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
-                json.dump(fresh, handle, ensure_ascii=False, indent=1)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, self.index)
-            self.items = fresh
+                account_lock = self.acquire(item)
+                if account_lock is None:
+                    raise PikPakError(f'账号 {username} 正在下载，稍后再登录')
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            Session(os.path.join(directory, 'session.json')).store(payload)
+            os.makedirs(self.home, exist_ok=True)
+            registry_lock = open(os.path.join(self.home, 'accounts.lock'), 'a+')
+            try:
+                fcntl.flock(registry_lock, fcntl.LOCK_EX)
+                fresh = Accounts(self.home).items
+                for index, existing in enumerate(fresh):
+                    if existing['id'] == account_id:
+                        fresh[index] = item
+                        break
+                else:
+                    fresh.append(item)
+                temporary = self.index + '.tmp'
+                descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+                    json.dump(fresh, handle, ensure_ascii=False, indent=1)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, self.index)
+                self.items = fresh
+            finally:
+                registry_lock.close()
+            return item
         finally:
-            registry_lock.close()
-        return item
+            if account_lock:
+                account_lock.close()
+            if known_lock:
+                known_lock.close()
 
     def find(self, label):
         matches = [item for item in self.items
