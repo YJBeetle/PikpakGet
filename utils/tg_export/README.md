@@ -41,13 +41,16 @@ python3 <仓库>/utils/tg_export/cluster.py ./ChatExport_XXX
 
 # 2) 不带参数列出全部分组，再按名称生成一份下载清单
 python3 <仓库>/utils/tg_export/make_links.py
-python3 <仓库>/utils/tg_export/make_links.py '系列甲' '系列乙' -o 第一批.txt
+python3 <仓库>/utils/tg_export/make_links.py '系列甲' '系列乙'  # 系列甲+系列乙.txt
 
 # 也可以用列表中的编号，适合名称重复的情况
-python3 <仓库>/utils/tg_export/make_links.py C002 C004 -o 第一批.txt
+python3 <仓库>/utils/tg_export/make_links.py C002 C004  # C002+C004.txt
 
 # 或把所有分组生成一份清单
-python3 <仓库>/utils/tg_export/make_links.py all -o 全部.txt
+python3 <仓库>/utils/tg_export/make_links.py all  # all.txt
+
+# 自己指定清单文件名时用 -o
+python3 <仓库>/utils/tg_export/make_links.py C002 C004 -o 第一批.txt
 
 # 3) 交给下载器
 python3 -m pikpakget 第一批.txt --dest <库目录>
@@ -56,8 +59,9 @@ python3 -m pikpakget 第一批.txt --dest <库目录>
 “分组”是脚本根据标签和名称归在一起的链接：多数对应作者或系列，也包含“未编号散更合集”等兜底组。
 `make_links.py` 固定读取当前目录的 `pikpak_links_dedup.csv`。分组名需与列表显示的完整名称一致；
 每个名称分别用引号包住，尤其是含空格或括号时。名称重复时改用 `C001` 这样的分组编号。
-`list` 等同于不带参数，`all` 把全部分组放入**同一份**清单。省略 `-o` 时写入当前目录的
-`links.txt`，再次生成会覆盖它。每条链接仍落到 CSV 对应的分组文件夹。
+`list` 等同于不带参数，`all` 把全部分组放入**同一份**清单。省略 `-o` 时，
+`all` 写 `all.txt`，其余按输入顺序用 `+` 拼文件名；名称里的 `/` 会改成全角 `／`。
+再次生成同名清单会覆盖旧文件。每条链接仍落到 CSV 对应的分组文件夹。
 
 ## 输出
 

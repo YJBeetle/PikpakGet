@@ -4,8 +4,8 @@
 Run in the directory containing pikpak_links_dedup.csv:
 
     make_links.py                      # show all group IDs and names
-    make_links.py '系列甲' '系列乙' -o 第一批.txt
-    make_links.py all -o 全部.txt
+    make_links.py '系列甲' '系列乙'  # writes 系列甲+系列乙.txt
+    make_links.py all              # writes all.txt
 """
 import argparse
 import collections
@@ -15,7 +15,17 @@ import shlex
 
 # 与 cluster.py 一致：就在 shell 的当前目录里读写
 DEFAULT_CATALOGUE = 'pikpak_links_dedup.csv'
-DEFAULT_OUTPUT = 'links.txt'
+
+
+def default_output(selection):
+    """Name a generated list after exactly what the user selected."""
+    if selection == ['all']:
+        return 'all.txt'
+    # A displayed group name may contain a slash, but an output name is one file.
+    name = '+'.join(value.replace('/', '／') for value in selection) + '.txt'
+    if len(name.encode('utf-8')) > 240:
+        raise ValueError('默认文件名过长，请用 -o 指定一个较短的文件名')
+    return name
 
 
 def load(path):
@@ -56,7 +66,7 @@ def main():
     parser.add_argument('selection', nargs='*', metavar='GROUP',
                         help='list：列出分组；all：全部；其余填完整分组名或 C001 这样的编号')
     parser.add_argument('-o', '--output', metavar='FILE',
-                        help='生成的清单文件（默认：links.txt）')
+                        help='自定义清单文件名（默认由输入拼成，例如 C001+C002.txt）')
     args = parser.parse_args()
     listing = not args.selection or args.selection == ['list']
     if listing and args.output:
@@ -90,7 +100,14 @@ def main():
                 parser.error(f'分组 {requested!r} 重复选择')
             selected.append(cluster_id)
     items = [item for cluster_id in selected for item in by_cluster[cluster_id]['items']]
-    path, count = write_list(args.output or DEFAULT_OUTPUT, items)
+    try:
+        output = args.output or default_output(args.selection)
+    except ValueError as error:
+        parser.error(str(error))
+    if os.path.abspath(output) in {os.path.abspath(DEFAULT_CATALOGUE),
+                                   os.path.abspath('pikpak_clusters.csv')}:
+        parser.error('输出文件不能覆盖分组 CSV')
+    path, count = write_list(output, items)
     print(f'写出 {path}：{len(selected)} 组、{count} 条链接')
 
 
