@@ -333,7 +333,7 @@ def main(export_dir, out_dir, vocab_path):
     counts = load_vocabulary(vocab_path)
     summary = '  '.join(f'{kind} {counts[kind]}' for kind in
                         ('alias', 'tag', 'rule', 'bucket', 'list') if counts[kind])
-    print(f'词表: {summary or "空，只按 hashtag 和格式规则聚类，不做名称合并"}'
+    print(f'词表: {summary or "空，只按 hashtag 和格式规则分组，不做名称合并"}'
           + (f'  <- {vocab_path}' if counts else ''))
     records = [r for r in load_records(export_dir) if 'mypikpak.com' in r['url']]
     if not records:
@@ -352,7 +352,7 @@ def main(export_dir, out_dir, vocab_path):
         primary = primary or (clean_label(occ[0]['label']) or '(未标注)')
         blob = ' '.join(notes) + ' ' + ' '.join(batch_members)
         rows.append({
-            '聚类名称': primary,
+            '分组名称': primary,
             '_root': cluster_root(primary),
             '资源名称': max(notes, key=len) if notes else primary,
             '最新标注': notes[-1] if notes else '',
@@ -377,18 +377,18 @@ def main(export_dir, out_dir, vocab_path):
     final = []
     for cid, (root, members) in enumerate(ordered, 1):
         members.sort(key=lambda r: (r['首次时间'] or datetime.max, r['分享ID']))
-        names = collections.Counter(m['聚类名称'] for m in members)
+        names = collections.Counter(m['分组名称'] for m in members)
         display = vocabulary.get(root) or min(
             names, key=lambda n: (-names[n], bool(re.search(r'\d', n)), len(n)))
         for seq, row in enumerate(members, 1):
-            row['聚类ID'] = f'C{cid:03d}'
-            row['聚类名称'] = display
-            row['聚类链接数'] = len(members)
+            row['分组ID'] = f'C{cid:03d}'
+            row['分组名称'] = display
+            row['分组链接数'] = len(members)
             row['组内序号'] = f'{seq}/{len(members)}'
             final.append(row)
 
     os.makedirs(out_dir, exist_ok=True)
-    columns = ['聚类ID', '聚类名称', '聚类链接数', '组内序号', '资源名称', '分享链接', '分享ID',
+    columns = ['分组ID', '分组名称', '分组链接数', '组内序号', '资源名称', '分享链接', '分享ID',
                '类型', '内容标签', '关联系列', '出现次数', '首次时间', '末次时间', '跨度天数',
                '最新标注', '消息ID', '导出文件']
     main_csv = f'{out_dir}/pikpak_links_dedup.csv'
@@ -404,10 +404,10 @@ def main(export_dir, out_dir, vocab_path):
     summary_csv = f'{out_dir}/pikpak_clusters.csv'
     with open(summary_csv, 'w', newline='', encoding='utf-8-sig') as fh:
         writer = csv.writer(fh)
-        writer.writerow(['聚类ID', '聚类名称', '链接数', '去重后链接数占比', '消息出现总次数',
+        writer.writerow(['分组ID', '分组名称', '链接数', '去重后链接数占比', '消息出现总次数',
                          '首次时间', '末次时间', '类型分布', '内容标签'])
         for cid, (root, members) in enumerate(ordered, 1):
-            display = members[0]['聚类名称']
+            display = members[0]['分组名称']
             types = collections.Counter(m['类型'] for m in members)
             tags = collections.Counter(t for m in members for t in m['内容标签'].split(';') if t)
             writer.writerow([
@@ -423,15 +423,15 @@ def main(export_dir, out_dir, vocab_path):
                 ';'.join(k for k, _ in tags.most_common(6)),
             ])
 
-    print(f'链接行 {len(records)} 条 -> 去重后 {len(rows)} 个唯一链接, 聚类 {len(ordered)} 组')
+    print(f'链接行 {len(records)} 条 -> 去重后 {len(rows)} 个唯一链接, 分组 {len(ordered)} 组')
     print(f'写出 {main_csv} / {summary_csv}')
     size_hist = collections.Counter(len(m) for _, m in ordered)
-    print('聚类规模分布 (链接数: 组数):', dict(sorted(size_hist.items())))
-    print('单链接聚类:', size_hist[1])
+    print('分组规模分布 (链接数: 组数):', dict(sorted(size_hist.items())))
+    print('单链接分组:', size_hist[1])
     print('类型分布:', collections.Counter(r['类型'] for r in rows).most_common())
-    print('Top 15 聚类:')
+    print('Top 15 分组:')
     for cid, (root, members) in enumerate(ordered[:15], 1):
-        print(f"  C{cid:03d} {members[0]['聚类名称']:<16} 链接{len(members):>2} 出现{sum(m['出现次数'] for m in members):>3}")
+        print(f"  C{cid:03d} {members[0]['分组名称']:<16} 链接{len(members):>2} 出现{sum(m['出现次数'] for m in members):>3}")
 
 
 if __name__ == '__main__':
