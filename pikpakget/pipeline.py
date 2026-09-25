@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 
-from .api import (DOT_DIR_NAME, Client, PikPakError, RestoreOutcomeUnknown,
+from .api import (CLOUD_FOLDER_NAME, DOT_DIR_NAME, Client, PikPakError, RestoreOutcomeUnknown,
                  TrafficCapped, account_dir,
                  parse_share_url)
 from .stream import (PIECE_SIZES, SegmentRefused, download_segments, download_stream,
@@ -1201,9 +1201,9 @@ class Pipeline:
         try:
             folders = [item for item in self.client.list_folder('*')
                        if item.get('kind') == 'drive#folder'
-                       and item.get('name') == DOT_DIR_NAME]
+                       and item.get('name') == CLOUD_FOLDER_NAME]
             if len(folders) > 1:
-                check('临时目录', 'FAIL', f'网盘根目录有 {len(folders)} 个 {DOT_DIR_NAME}')
+                check('临时目录', 'FAIL', f'网盘根目录有 {len(folders)} 个 {CLOUD_FOLDER_NAME}')
                 return self._doctor_verdict(rows)
             leftovers = self.client.list_folder(folders[0]['id']) if folders else []
         except PikPakError as error:
@@ -1211,8 +1211,9 @@ class Pipeline:
         else:
             size = sum(int(item.get('size') or 0) for item in leftovers)
             check('云端残留', 'warn' if leftovers else 'ok',
-                  f'{DOT_DIR_NAME} 内 {len(leftovers)} 项、{human(size)}；下次实际下载启动前会清理'
-                  if leftovers else f'{DOT_DIR_NAME} 内没有待清理内容')
+                  f'{CLOUD_FOLDER_NAME} 内 {len(leftovers)} 项、{human(size)}；'
+                  '只有空间不足时才会询问是否清理'
+                  if leftovers else f'{CLOUD_FOLDER_NAME} 内没有待清理内容')
         return self._doctor_verdict(rows)
 
     @staticmethod
@@ -1239,7 +1240,9 @@ class Pipeline:
         totals = {'got': 0, 'planned': 0, 'spent': 0.0, 'skipped': 0}
         for url, info in links:
             records = by_url.get(url, [])
-            planned = sum(rec['size'] for rec in records)
+            recorded_bytes = sum(rec['size'] for rec in records)
+            planned = max(int(info.get('total_bytes') or 0), recorded_bytes)
+            file_count = max(int(info.get('file_count') or 0), len(records))
             got = sum(rec['size'] for rec in records if rec['state'] == 'done')
             spent = sum(rec.get('seconds') or 0 for rec in records if rec['state'] == 'done')
             skipped = sum(rec['size'] for rec in records if rec['state'] == 'too_big')
@@ -1251,7 +1254,7 @@ class Pipeline:
             if unverified:
                 note += f'  ({unverified} unverified)'
             folder = (info.get('folder') or url[-10:])[:25]
-            print(f'{folder:<26}{(info.get("status") or "-"):<12}{len(records):>7}{done:>6}'
+            print(f'{folder:<26}{(info.get("status") or "-"):<12}{file_count:>7}{done:>6}'
                   f'{human(got):>11}{human(planned):>11}  {share:5.1f}% '
                   f"{'#' * int(share / 4)}{note}")
             totals['got'] += got
@@ -1265,7 +1268,9 @@ class Pipeline:
             print(f"合计 {human(totals['got'])} / {human(totals['planned'])}，"
                   f"实测 {human(rate)}/s，剩余 {human(remaining)} 约需 "
                   f'{hours:.0f} 小时（{hours / 24:.1f} 天）')
-        partial = sorted(_glob.glob(os.path.join(self.args.dest, '*', '*.part')))
+        partial = sorted({path + '.part' for rec in self.state.data['files'].values()
+                          for path in (rec.get('local'), rec.get('home')) if path
+                          and os.path.isfile(path + '.part')})
         for path in partial:
             age = time.time() - os.path.getmtime(path)
             print(f'下载中: {os.path.basename(path)[:52]}… {human(os.path.getsize(path))}'

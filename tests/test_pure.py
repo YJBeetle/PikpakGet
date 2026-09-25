@@ -547,6 +547,27 @@ class TestStatusWithoutProgress(unittest.TestCase):
             self.assertEqual(self.pipeline.status(), 0)
         self.assertIn('本地剩余', buffer.getvalue())
 
+    def test_status_uses_last_inventory_totals_and_finds_nested_partial(self):
+        import contextlib
+        import io
+        key = 'https://mypikpak.com/s/EXAMPLEID1111111111\tSeries'
+        self.pipeline.state.link(key).update({
+            'order': 1, 'folder': 'Series', 'status': 'active',
+            'file_count': 1199, 'total_bytes': 2000})
+        partial = os.path.join(self.pipeline.args.dest, 'Series', 'Root', 'Child', 'one.mp4.part')
+        os.makedirs(os.path.dirname(partial))
+        with open(partial, 'wb') as handle:
+            handle.write(b'x' * 20)
+        self.pipeline.state.file('F1', key).update({
+            'state': 'done', 'local': partial.removesuffix('.part'), 'size': 100})
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.pipeline.status()
+        output = buffer.getvalue()
+        self.assertIn('1199', output)
+        self.assertIn('5.0%', output)
+        self.assertIn('下载中: one.mp4.part', output)
+
 
 class TestLoginNeedsNoArgument(unittest.TestCase):
     """`--login` with no value is the first thing anyone types; argparse answered it
@@ -884,12 +905,13 @@ class TestDoctor(RunLinkHarness):
 
     def test_staging_folder_leftovers_are_only_a_warning(self):
         self.stub_client(list_folder=lambda parent='*': (
-            [{'kind': 'drive#folder', 'id': 'STAGING', 'name': '.pikpakget'}]
+            [{'kind': 'drive#folder', 'id': 'STAGING', 'name': 'Pack From Shared'}]
             if parent == '*' else
             [{'kind': 'drive#file', 'id': 'OLD_COPY', 'size': '1600000000'}]))
         code, output = self.run_doctor()
         self.assertEqual(code, 0, output)
-        self.assertIn('.pikpakget 内 1 项', output)
+        self.assertIn('Pack From Shared 内 1 项', output)
+        self.assertIn('只有空间不足时才会询问', output)
 
     def test_a_dead_api_is_a_failure_with_its_reason(self):
         from pikpakget.api import PikPakError

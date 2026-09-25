@@ -31,6 +31,7 @@ SDK_VERSION = '2.0.4.204000'
 # the one directory name this tool ever creates: `~/.pikpakget` for the account, and
 # `<library>/.pikpakget` for a library's own journal
 DOT_DIR_NAME = '.pikpakget'
+CLOUD_FOLDER_NAME = 'Pack From Shared'
 DEFAULT_DEST = os.path.join('~', 'Downloads', 'PikPak')
 
 
@@ -456,7 +457,7 @@ class Client:
             'kind': 'drive#folder', 'name': name,
             'parent_id': '' if parent_id == '*' else parent_id})
 
-    def prepare_workspace(self, name='Pack From Shared'):
+    def prepare_workspace(self, name=CLOUD_FOLDER_NAME):
         """Find or create the restore folder without deleting its contents."""
         folders = [item for item in self.list_folder('*')
                    if item.get('name') == name and item.get('kind') == 'drive#folder']
