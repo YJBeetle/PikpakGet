@@ -1047,6 +1047,8 @@ class Pipeline:
                  f'（回收站 {human(space["in_trash"])}）| '
                  f'本地可用 {human(shutil.disk_usage(self.args.dest).free)} | '
                  f'并发 {self.args.connections} 段')
+        if self.workspace_id:
+            self.reclaim_workspace(0)
         if self.args.limit:
             jobs = jobs[:self.args.limit]
         for pass_number in itertools.count(1):

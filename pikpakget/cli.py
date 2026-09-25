@@ -22,14 +22,14 @@ STOP = False
 
 
 def _confirm_cloud_cleanup(items, owned_ids, label, log):
-    log(f'账号 {label} 空间不足；Pack From Shared 中有 {len(items)} 项可清理：', 'warn')
+    log(f'账号 {label} 的 Pack From Shared 中有 {len(items)} 项可清理：', 'warn')
     for item in items[:10]:
         owner = '本库记录' if item['id'] in owned_ids else '归属未知'
         log(f'  {item.get("name") or "(无名称)"} ({owner}，ID: {item["id"]})', 'warn')
     if len(items) > 10:
         log(f'  另有 {len(items) - 10} 项未列出', 'warn')
     if not sys.stdin.isatty():
-        log('当前没有交互终端，无法确认清理；请在终端重跑', 'error')
+        log('当前没有交互终端，未清理；需要清理时请在交互式终端重跑', 'warn')
         return False
     try:
         return input('只永久删除上述 Pack From Shared 项目及其内容？输入“删除”确认：').strip() == '删除'

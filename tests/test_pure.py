@@ -507,6 +507,41 @@ class TestPipelineStartup(unittest.TestCase):
         self.assertEqual(pipeline.run([]), 0)
         self.assertTrue(messages[0].startswith('账号 first@example.com | 0 个链接 ->'))
 
+    def test_download_start_prompts_for_pack_leftovers(self):
+        from pikpakget.pipeline import Pipeline
+
+        class Cloud:
+            def __init__(self):
+                self.items = [{'id': 'old', 'name': 'old.mp4', 'size': 100}]
+                self.deleted = []
+                self.listed = []
+
+            def space(self):
+                return {'limit': 1000, 'usage': 100 if self.items else 0,
+                        'in_trash': 0, 'free': 900 if self.items else 1000}
+
+            def list_folder(self, parent_id):
+                self.listed.append(parent_id)
+                return list(self.items)
+
+            def cleanup(self, ids):
+                self.deleted.extend(ids)
+                self.items = []
+
+        dirpath = tempfile.mkdtemp()
+        args = argparse.Namespace(state_dir=os.path.join(dirpath, '.state'), dest=dirpath,
+                                  max_files=0, connections=1, gap=0, repeat=0,
+                                  dry_run=False, inventory_only=False, limit=0)
+        cloud = Cloud()
+        prompted = []
+        pipeline = Pipeline(args, lambda message, level='info': None, client=cloud,
+                            workspace_id='pack', account_id='account',
+                            confirm_cleanup=lambda items, owned: prompted.append(items) or True)
+        self.assertEqual(pipeline.run([]), 0)
+        self.assertEqual([item['id'] for item in prompted[0]], ['old'])
+        self.assertEqual(cloud.deleted, ['old'])
+        self.assertEqual(cloud.listed, ['pack', 'pack'])
+
 
 class TestStatusWithoutProgress(unittest.TestCase):
     """`--status` on a machine with no records printed a bare table header, which is
