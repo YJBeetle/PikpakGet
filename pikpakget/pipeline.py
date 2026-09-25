@@ -185,6 +185,13 @@ class Log:
             os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
             self.handle = open(path, 'a', encoding='utf-8')
 
+    def close(self):
+        # idempotent: main closes the log it opened on every exit path, while a
+        # library caller keeps writing to the one it built itself
+        handle, self.handle = self.handle, None
+        if handle:
+            handle.close()
+
     def __call__(self, message, level='info'):
         stamp = time.strftime('%H:%M:%S')
         debug_on = os.environ.get('PIKPAKGET_DEBUG')

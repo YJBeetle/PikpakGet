@@ -6,6 +6,12 @@ line and module APIs may change between releases.
 ## Unreleased
 
 ### Fixed
+- **The log file was opened and never closed.** Every early exit (`--version`,
+  `--whoami`, `--status`, `--doctor`, an error return) left the handle to the garbage
+  collector: an unclosed-file warning at interpreter exit, and a file Windows would not
+  let go of. `main` now owns the log it opens and closes it on every path. The local
+  HTTP server in the transfer tests had the same habit (`shutdown` without
+  `server_close`).
 - **Expected failures printed a Python traceback.** `--whoami` with no session, and a
   refused `--login`, both dumped a stack because only the download path had an error
   handler. They now print one line to stderr and exit 2; a traceback is reserved for a

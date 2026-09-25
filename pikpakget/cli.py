@@ -152,6 +152,16 @@ def main(argv=None):
     log = (Log(quiet=args.quiet) if args.doctor or args.log == '-'
            else Log(os.path.join(args.state_dir, f'grab-{time.strftime("%Y-%m-%d")}.log'),
                     args.quiet))
+    # the log is opened here, so it has to be closed here: every early return used to
+    # leave the handle to the garbage collector, which shows up as an unclosed-file
+    # warning at exit and keeps the file locked on Windows
+    try:
+        return _commands(args, log)
+    finally:
+        log.close()
+
+
+def _commands(args, log):
     _warn_about_legacy_state(args, log)
     try:
         client = Client(session_path=os.path.join(args.state_dir, 'session.json'),

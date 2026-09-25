@@ -477,6 +477,29 @@ class TestPipelineStartup(unittest.TestCase):
         self.assertEqual(pipeline.used_names[key], 'done.mp4')
 
 
+class TestLogCloses(unittest.TestCase):
+    """main() opens the log and now closes it on every path; a library caller keeps
+    writing to the one it made, so closing must be safe twice and writing after close
+    must not be silent."""
+
+    def test_close_is_idempotent_and_writing_after_it_is_still_printed(self):
+        import contextlib
+        import io
+        from pikpakget.pipeline import Log
+        path = os.path.join(tempfile.mkdtemp(), 'sub', 'grab.log')
+        log = Log(path)
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            log('一条')
+        log.close()
+        log.close()
+        with contextlib.redirect_stdout(buffer):
+            log('两条')
+        self.assertIn('两条', buffer.getvalue())
+        with open(path, encoding='utf-8') as handle:
+            self.assertIn('一条', handle.read())
+
+
 class TestErrorsAreReadable(unittest.TestCase):
     """`--whoami` without a session was a wall of traceback. A refused command is
     information for the user; only a bug in here is information for me."""
