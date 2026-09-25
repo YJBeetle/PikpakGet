@@ -18,7 +18,8 @@ import shutil
 import sys
 import time
 
-from .api import PikPakError, Client, TrafficCapped, parse_share_url
+from .api import (DOT_DIR_NAME, Client, PikPakError, TrafficCapped, account_dir,
+                 parse_share_url)
 from .stream import (PIECE_SIZES, SegmentRefused, download_segments, download_stream,
                      verify_content)
 
@@ -135,6 +136,10 @@ def safe_name(name, limit=200):
     # flattened a pair of dots inside a title is just two dots, and rewriting those
     # mangled filenames for protection nobody needed
     if text in ('.', '..'):
+        text = '_' + text
+    # a library keeps its journal in <dest>/.pikpakget, so a share folder or file that
+    # arrives with exactly that name would otherwise be written into (or over) it
+    if text == DOT_DIR_NAME:
         text = '_' + text
     text = text.strip(' ')
     if len(text.encode('utf-8')) > limit:
@@ -290,9 +295,16 @@ class Pipeline:
         self.args = args
         self.log = log
         self.stop = stop
-        os.makedirs(args.state_dir, exist_ok=True)
-        self.client = Client(session_path=os.path.join(args.state_dir, 'session.json'),
-                             device_id_path=os.path.join(args.state_dir, 'device_id'),
+        # no makedirs here: State.save and the lock create the journal directory when
+        # something has to be written, and a read-only report must not fail because a
+        # library path turned out to be unbuildable
+        #
+        # the login belongs to the account and stays in home; a run that points --dest at
+        # a second library moves only its journal. Callers that construct Pipeline
+        # directly (tests, library use) keep the credential beside the journal
+        self.account_dir = getattr(args, 'account_dir', None) or account_dir()
+        self.client = Client(session_path=os.path.join(self.account_dir, 'session.json'),
+                             device_id_path=os.path.join(self.account_dir, 'device_id'),
                              logger=log)
         self.state = State(os.path.join(args.state_dir, 'state.json'))
         self.created = set()          # drive ids we made: the only ones we may delete
@@ -1004,8 +1016,22 @@ class Pipeline:
         else:
             check('curl', 'ok' if curl else 'note',
                   '单流用 urllib，不需要 curl' if not curl else curl)
-        for label, path, needs_space in (
-                ('目标目录', self.args.dest, True), ('状态目录', self.args.state_dir, False)):
+        # three directories with three different jobs: the library is where bytes land,
+        # the journal beside it is what a re-run reads, and the account folder holds the
+        # login whichever library is being filled. For the remembered library the last two
+        # are the same path, and one row has to say so rather than report it twice
+        wanted, by_path = [], {}
+        for label, path, needs_space in (('库目录', self.args.dest, True),
+                                         ('进度目录', self.args.state_dir, False),
+                                         ('账号目录', self.account_dir, False)):
+            key = os.path.abspath(path)
+            if key in by_path:
+                by_path[key][0] += f'+{label}'
+                continue
+            row = [label, path, needs_space]
+            by_path[key] = row
+            wanted.append(row)
+        for label, path, needs_space in wanted:
             if not os.path.isdir(path):
                 # creating it is what a run would do anyway; doing it here turns
                 # "no such path" into a reported failure instead of a traceback
@@ -1054,7 +1080,7 @@ class Pipeline:
         session = self.client.session
         if not session.access_token:
             check('会话', 'FAIL', f'还没有登录：{self.client.session.path} 里没有会话'
-                  f'（`--login` 要带同一个 --state-dir）')
+                  f'（先运行 --login；这一份会话所有库共用）')
             return self._doctor_verdict(rows)
         minutes = int(session.expires_in() // 60)
         check('会话', 'ok' if session.data.get('refresh_token') else 'warn',
@@ -1100,7 +1126,7 @@ class Pipeline:
         links = sorted(self.state.data['links'].items(), key=lambda kv: kv[1].get('order') or 999)
         if links:
             # a header with no rows underneath reads as broken output, which is exactly
-            # what it looks like when --state-dir points somewhere with no progress
+            # what it looks like when --dest names a library that has no journal yet
             print(f"{'folder':<26}{'status':<12}{'files':>7}{'done':>6}"
                   f"{'bytes':>11}{'planned':>11}  progress")
         totals = {'got': 0, 'planned': 0, 'spent': 0.0, 'skipped': 0}
@@ -1138,8 +1164,8 @@ class Pipeline:
             print(f'下载中: {os.path.basename(path)[:52]}… {human(os.path.getsize(path))}'
                   f'（{age:.0f}s 前还在写）')
         if not links and not partial:
-            print(f'{self.args.state_dir} 里没有任何进度记录：还没跑过，'
-                  '或者 --state-dir 没指向有记录的那个目录')
+            print(f'{self.args.state_dir} 里没有任何进度记录：这个库还没跑过，'
+                  '或者 --dest 没指到那个库（进度跟着库走）')
         try:
             space = self.space()
             free = disk_free(self.args.dest)

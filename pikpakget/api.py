@@ -11,6 +11,7 @@ mutating call carries a short-lived shield `captcha_token` minted locally.
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -27,6 +28,21 @@ CLIENT_SECRET = 'dbw2OtmVEeuUvIptb1Coyg'
 CLIENT_VERSION = '1.47.1'
 PACKAGE_NAME = 'com.pikcloud.pikpak'
 SDK_VERSION = '2.0.4.204000'
+
+# the one directory name this tool ever creates: `~/.pikpakget` for the account, and
+# `<library>/.pikpakget` for a library's own journal
+DOT_DIR_NAME = '.pikpakget'
+DEFAULT_DEST = os.path.join('~', 'Downloads', 'PikPak')
+
+
+def account_dir():
+    """`~/.pikpakget`: the login, the device id and `config.json`.
+
+    Never derived from `--dest` — a second library on another volume brings its progress
+    journal, not its credentials. `PIKPAKGET_HOME` redirects it so a test can exercise a
+    sign-in without writing a device id into the home directory of whoever runs the suite."""
+    return os.path.join(os.environ.get('PIKPAKGET_HOME') or os.path.expanduser('~'),
+                        DOT_DIR_NAME)
 
 CAPTCHA_SALTS = (
     'Gez0T9ijiI9WCeTsKSg3SMlx',
@@ -259,9 +275,9 @@ class Client:
             raise PikPakError(f'登录失败: {detail}{hint}\n服务端原文: {_safe_body(body)}',
                               status=status, action='signin')
         self.session.store(self._token_record(body))
-        # the path belongs in the message: `--login` without `--state-dir` writes to
-        # the default directory, and a later run that does pass one finds no session
-        # there and reads as "the login dropped"
+        # the path belongs in the message: one session serves every library, so when a
+        # later run reports "no session" this is the line that says which account
+        # directory it should have been looking at"
         self.log(f'登录成功，会话已保存到 {self.session.path}（权限 600）')
         return self.session.data
 
@@ -293,7 +309,7 @@ class Client:
     def ensure_session(self, force=False):
         if not self.session.access_token:
             raise PikPakError(f'还没有登录：{self.session.path} 里没有会话。'
-                             f'先运行 --login，或把 --state-dir 指向已登录的那个目录',
+                              f'先运行 --login（所有库共用这一份会话）',
                               action='session')
         if force or not self.session.valid(TOKEN_REFRESH_MARGIN):
             self.refresh()

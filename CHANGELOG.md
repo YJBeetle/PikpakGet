@@ -6,6 +6,29 @@ line and module APIs may change between releases.
 ## Unreleased
 
 ### Changed
+- **Two anchors instead of three flags that could disagree.** `--dest` no longer defaults
+  to `$PWD/downloads` (it is `~/Downloads/PikPak`, the library a run falls back to), and
+  `--state-dir` is gone. What remains: the **account directory** `~/.pikpakget/` holds the
+  login, the device id and `config.json`; the **journal** — `state.json`, the
+  single-instance lock, the log — lives there too while you are on the remembered library,
+  and moves to `<library>/.pikpakget/` the moment `--dest` names another one. That is the
+  case where the volume is the shared thing: a disk two machines mount now answers "what
+  have I already downloaded here" the same way from both, while one `--login` still serves
+  every library (credentials are deliberately unreachable by `--dest`).
+- **`--set-config dest=<path>` remembers the library** in `~/.pikpakget/config.json`, so
+  the next run needs no flag; `dest=` clears it. `dest` is the only storable key on
+  purpose — everything else is a knob you tune per run, and a stale value in a file nobody
+  remembers writing is the hardest kind of difference to explain. An unreadable or
+  half-understood config warns once on stderr and continues on the built-in default rather
+  than stopping a multi-day run.
+- **`safe_name` refuses `.pikpakget`** as a local name (it becomes `_.pikpakget`): a share
+  folder or file arriving with exactly that name would otherwise be written into the
+  library's own journal directory.
+- **A journal this run is not reading gets named.** The startup notice covers the old
+  repo-local `.pikpakget/`, the journal beside the current `--dest`, and the account
+  directory, and says which path it is using and how to make the other one count; failures
+  to build the journal or account directory print those paths too.
+
 - **A bare `--login` asks for the account instead of dumping usage.** It is the first
   thing people type, and argparse answered a question about the account with an English
   usage block. A scripted call with no terminal gets one line and exit 2; the password

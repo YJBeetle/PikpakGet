@@ -74,11 +74,11 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 
 | flag | default | meaning |
 |---|---|---|
-| `--dest DIR` | `./downloads` | root of the library; each folder becomes `DIR/<folder>/`. Pass it explicitly: state records absolute paths, so a different cwd splits a library across two places |
-| `--state-dir DIR` | `~/.pikpakget` | session, device id, `state.json`, single-instance lock — it follows the user, not the current directory |
+| `--dest DIR` | `~/Downloads/PikPak` | root of the library; each folder becomes `DIR/<folder>/`. State records absolute paths, so a different `--dest` is a second library — remember yours with `--set-config dest=...` |
+| `--set-config KEY=VALUE` | — | store `dest` in `~/.pikpakget/config.json` and exit, so the next run needs no flag (`--set-config dest=` clears it). `dest` is the only storable key |
 | `--connections N` | `4` | ranged connections per file; `1` = plain single stream |
 | `--gap SEC` | `20` | rest between files, keeps request density low |
-| `--log PATH` | `~/.pikpakget/grab-<date>.log` | `-` for stdout only |
+| `--log PATH` | `grab-<date>.log` beside the journal | `-` for stdout only |
 | `--repeat N` | `0` (one pass) | re-pass the list to finish links that failed transiently; stops when a whole pass lands nothing |
 | `--limit N` / `--max-files N` | `0` (off) | stop after N links / N files |
 | `--inventory` | off | size up every link (count, bytes, largest file), no downloads |
@@ -94,6 +94,21 @@ python3 -m pikpakget links.txt --max-files 5   # dip a toe in
 | `--login [USERNAME]` / `--password-stdin` | — | sign in once; a bare `--login` asks for the account in a terminal, and `--password-stdin` reads the password from stdin instead of a prompt |
 | `--yes` | off | skip unparsable lines in the links file instead of refusing to start |
 | `--quiet` | off | hide info chatter, warnings still shown |
+
+## Where things live
+
+| directory | holds |
+|---|---|
+| `~/.pikpakget/` | the login (`session.json`, 0600), the device id, and `config.json` |
+| `~/.pikpakget/` again | `state.json`, the single-instance lock and the log — while you are using the library named in `config.json` (or the built-in `~/Downloads/PikPak`) |
+| `<library>/.pikpakget/` | the same three files, once the library is **not** the remembered one |
+
+Two rules behind that: a library is identified by its path, so pointing `--dest`
+somewhere new starts a second library rather than continuing the first; and a second
+library carries its **progress**, never its **login** — the credential stays in
+`~/.pikpakget`, so one `--login` serves every library. The journal follows a non-default
+library because that is the case where the volume is shared: a disk two machines mount
+has to answer "what have I already downloaded here" the same way from both.
 
 ## What the quota actually behaves like
 
@@ -186,7 +201,7 @@ so a resumed run re-writes the same path instead of creating a second copy.
 ## Logging
 
 The same lines printed to the terminal are appended to
-`~/.pikpakget/grab-<date>.log`, because a multi-day run outlives the terminal.
+`grab-<date>.log` beside the journal, because a multi-day run outlives the terminal.
 `--log -` disables it. That directory also holds `state.json`, the session and the
 device id; it follows the user rather than the working directory on purpose, so
 progress and login are the same no matter where you run from. Nothing is written
@@ -219,6 +234,9 @@ bytes are deleted; until then the record points at both.
 
 - `~/.pikpakget/` holds your session (`access_token`, single-use rotating
   `refresh_token`) and is in `.gitignore`; the session file is written `0600`.
+- A second library keeps its own `state.json` under `<library>/.pikpakget/` — the
+  progress journal lists real share URLs, file ids and paths, so that name is ignored at
+  every depth by `.gitignore` for the same reason. Never commit one.
   `--logout` deletes it.
 - `CLIENT_ID` / `CLIENT_SECRET` in `pikpakget/api.py` are the public application
   constants of the official app (they ship in the client and in published SDKs).
@@ -233,7 +251,7 @@ pikpakget/api.py       HTTP client: session, captcha sign, share/drive/trash end
 pikpakget/stream.py    single resumable stream, ranged segments, the hash rule
 pikpakget/pipeline.py  link parsing, state journal, quota logic, status/inventory/verify
 pikpakget/cli.py       argument parsing, single-instance lock, signal handling
-tests/test_pure.py     160 on the pure logic; no account, no network
+tests/test_pure.py     165 on the pure logic; no account, no network
 tests/test_transfer.py   5 real transfers over local HTTP, with real curl
 ```
 
@@ -286,7 +304,7 @@ Stated plainly, because each one has bitten someone at some point:
 
 ## Moving to another machine
 
-`python3 -m pikpakget --doctor --dest <你打算存放的目录> --state-dir <你打算放状态的目录>`
+`python3 -m pikpakget --doctor --dest <the directory you will download into>`
 answers "will this run here?" before you commit to a multi-day job: it checks the Python
 floor, `curl` (only the segmented path needs it — `--connections 1` does not), whether
 the interpreter's SHA-1 is usable (FIPS builds refuse it), that both directories exist

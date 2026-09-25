@@ -14,6 +14,11 @@ from pikpakget.pipeline import (AUTH_STOP, STATE_VERSION, State, human, load_fol
                                 read_links, safe_name)
 from pikpakget.stream import plan_segments
 
+# The login, the device id and config.json are anchored in the account directory,
+# so a test that builds a Client has to redirect that home: left alone it would
+# write a device id into whoever runs the suite.
+os.environ['PIKPAKGET_HOME'] = tempfile.mkdtemp(prefix='pikpakget-home-')
+
 
 class TestShareUrl(unittest.TestCase):
     def test_plain_link(self):
@@ -570,8 +575,7 @@ class TestLoginNeedsNoArgument(unittest.TestCase):
         import unittest.mock
         with unittest.mock.patch.object(sys, 'stdin', self.fake_stdin(True)), \
                 unittest.mock.patch('builtins.input', lambda prompt: 'typed@example.com'):
-            self.assertEqual(self.cli.main(['--login', '--state-dir', tempfile.mkdtemp(),
-                                            '--dest', tempfile.mkdtemp()]), 0)
+            self.assertEqual(self.cli.main(['--login', '--dest', tempfile.mkdtemp()]), 0)
         self.assertEqual(LoginCalls, [('typed@example.com', 'pw')])
 
     def test_a_scripted_call_without_a_terminal_says_so(self):
@@ -582,16 +586,15 @@ class TestLoginNeedsNoArgument(unittest.TestCase):
         buffer = io.StringIO()
         with unittest.mock.patch.object(sys, 'stdin', self.fake_stdin(False)), \
                 contextlib.redirect_stderr(buffer):
-            code = self.cli.main(['--login', '--state-dir', tempfile.mkdtemp(),
-                                  '--dest', tempfile.mkdtemp()])
+            code = self.cli.main(['--login', '--dest', tempfile.mkdtemp()])
         self.assertEqual(code, 2)
         text = buffer.getvalue()
         self.assertIn('需要账号', text)
         self.assertNotIn('usage:', text, 'no argparse dump')
 
     def test_an_account_on_the_command_line_still_works(self):
-        self.assertEqual(self.cli.main(['--login', 'given@example.com', '--state-dir',
-                                        tempfile.mkdtemp(), '--dest', tempfile.mkdtemp()]), 0)
+        self.assertEqual(self.cli.main(['--login', 'given@example.com',
+                                        '--dest', tempfile.mkdtemp()]), 0)
         self.assertEqual(LoginCalls, [('given@example.com', 'pw')])
 
 
@@ -628,16 +631,19 @@ class TestErrorsAreReadable(unittest.TestCase):
     def test_a_missing_session_is_one_line_not_a_traceback(self):
         import contextlib
         import io
+        import unittest.mock
         import pikpakget.cli as cli
         buffer = io.StringIO()
-        with contextlib.redirect_stderr(buffer):
-            code = cli.main(['--whoami', '--state-dir', os.path.join(self.dir, 'nostate'),
-                             '--dest', self.dir])
+        empty_home = os.path.join(self.dir, 'nostate')
+        with unittest.mock.patch.dict(os.environ, {'PIKPAKGET_HOME': empty_home}), \
+                contextlib.redirect_stderr(buffer):
+            code = cli.main(['--whoami', '--dest', self.dir])
         text = buffer.getvalue()
         self.assertEqual(code, 2)
         self.assertNotIn('Traceback', text)
         self.assertEqual(text.count('错误：'), 1, text)
-        self.assertIn('nostate/session.json', text, 'it must say which file it looked in')
+        self.assertIn(os.path.join('nostate', '.pikpakget', 'session.json'), text,
+                    'it must say which file it looked in')
 
     def test_a_local_failure_does_not_report_an_http_status(self):
         from pikpakget.api import PikPakError
@@ -657,68 +663,121 @@ class TestErrorsAreReadable(unittest.TestCase):
         original = os.getcwd()
         os.chdir(old)
         self.addCleanup(os.chdir, original)
-        args = argparse.Namespace(state_dir=os.path.join(self.dir, 'home'))
+        args = argparse.Namespace(state_dir=os.path.join(self.dir, 'home'),
+                                  account_dir=os.path.join(self.dir, 'home'),
+                                  dest=os.path.join(self.dir, 'repo', 'lib'))
         cli._warn_about_legacy_state(args, lambda message, level='info': captured.append(message))
         self.assertEqual(len(captured), 1, captured)
         self.assertIn('登录会话', captured[0])
 
 
-class TestStateFollowsTheUser(unittest.TestCase):
-    """The state directory used to default to `./.pikpakget`, so a login from one
-    directory was invisible to a run from another and read as a dropped session."""
+class TestReservedDirectoryName(unittest.TestCase):
+    """A library keeps its journal in `<library>/.pikpakget`, so a share folder or a
+    file that arrives named exactly that would be written into the journal."""
 
-    def test_the_default_state_directory_follows_home_not_cwd(self):
-        import os as os_module
+    def test_the_journal_directory_name_cannot_arrive_as_a_remote_name(self):
+        self.assertEqual(safe_name('.pikpakget'), '_.pikpakget')
+        self.assertEqual(safe_name('正常文件夹'), '正常文件夹')
+
+
+class TestTheThreeAnchors(unittest.TestCase):
+    """Where a run looks, and what it may write there.
+
+    The account directory (`~/.pikpakget`) holds the login, the device id and
+    `config.json`. The remembered library keeps its journal there too; any other library
+    carries its own `<library>/.pikpakget`, because a volume two machines mount is the
+    one case where progress has to travel with the data instead of with the account."""
+
+    def setUp(self):
         import unittest.mock
         import pikpakget.cli as cli
-        home = tempfile.mkdtemp()
-        elsewhere = tempfile.mkdtemp()
+        self.cli = cli
+        self.dir = tempfile.mkdtemp()
+        self.fake_home = os.path.join(self.dir, 'home')
+        patch = unittest.mock.patch.dict(os.environ, {'PIKPAKGET_HOME': self.fake_home})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.home = self.cli.account_dir()      # <fake home>/.pikpakget
+
+    def resolve(self, *extra):
+        args = self.cli.build_parser().parse_args(list(extra))
+        self.cli.resolve_dirs(args)
+        return args
+
+    def test_nothing_follows_the_working_directory(self):
         original = os.getcwd()
+        elsewhere = tempfile.mkdtemp()
         os.chdir(elsewhere)
         self.addCleanup(os.chdir, original)
-        with unittest.mock.patch.dict(os_module.environ, {'HOME': home}):
-            default = cli.build_parser().get_default('state_dir')
-        self.assertEqual(default, os.path.join(home, '.pikpakget'))
-        self.assertFalse(default.startswith(elsewhere))
+        args = self.resolve()
+        self.assertEqual(args.dest, os.path.expanduser(self.cli.DEFAULT_DEST))
+        self.assertFalse(args.dest.startswith(elsewhere))
 
-    def test_progress_in_the_old_place_is_pointed_out(self):
-        import pikpakget.cli as cli
+    def test_the_remembered_library_keeps_its_journal_in_the_account_directory(self):
+        args = self.resolve()
+        self.assertEqual(args.state_dir, self.home)
+        self.assertEqual(args.account_dir, self.home)
+
+    def test_another_library_carries_its_own_journal_but_not_its_login(self):
+        volume = os.path.join(self.dir, 'nas', 'PikPak')
+        args = self.resolve('--dest', volume)
+        self.assertEqual(args.state_dir, os.path.join(volume, '.pikpakget'))
+        self.assertEqual(args.account_dir, self.home,
+                         'a second library must not mean a second sign-in')
+
+    def test_config_dest_is_the_default_and_the_command_line_still_wins(self):
+        import contextlib
+        import io
+        volume = os.path.join(self.dir, 'nas', 'PikPak')
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.assertEqual(self.cli.write_config([f'dest={volume}']), 0)
+        self.assertEqual(self.resolve().dest, volume)
+        self.assertEqual(self.resolve().state_dir, self.home,
+                         'the remembered library is now the default one, journal in home')
+        third = os.path.join(self.dir, 'third')
+        self.assertEqual(self.resolve('--dest', third).state_dir,
+                         os.path.join(third, '.pikpakget'))
+
+    def test_only_dest_is_storable(self):
+        import contextlib
+        import io
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            code = self.cli.main(['--set-config', 'connections=8'])
+        self.assertEqual(code, 2)
+        self.assertIn('只记 dest', err.getvalue())
+
+    def test_an_unreadable_config_warns_once_and_falls_back(self):
+        import contextlib
+        import io
+        os.makedirs(self.home, exist_ok=True)
+        with open(os.path.join(self.home, 'config.json'), 'w') as handle:
+            handle.write('{not json')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            args = self.resolve()
+        self.assertEqual(args.dest, os.path.expanduser(self.cli.DEFAULT_DEST))
+        self.assertEqual(err.getvalue().count('读不了'), 1, err.getvalue())
+
+    def test_a_journal_this_run_is_not_reading_gets_named(self):
+        """The case that reads as lost progress: a run pointed at a second library, with
+        the first one's journal still sitting in the account directory."""
         captured = []
-        old = tempfile.mkdtemp()
-        os.makedirs(os.path.join(old, '.pikpakget'))
-        with open(os.path.join(old, '.pikpakget', 'state.json'), 'w') as handle:
+        os.makedirs(self.home, exist_ok=True)
+        with open(os.path.join(self.home, 'state.json'), 'w') as handle:
             handle.write('{}')
-        elsewhere = tempfile.mkdtemp()
-        original = os.getcwd()
-        os.chdir(old)
-        self.addCleanup(os.chdir, original)
-        args = argparse.Namespace(state_dir=elsewhere)
-        cli._warn_about_legacy_state(args, lambda message, level='info': captured.append(message))
+        volume = os.path.join(self.dir, 'nas', 'PikPak')
+        args = self.resolve('--dest', volume)
+        self.cli._warn_about_legacy_state(args, lambda m, level='info': captured.append(m))
         self.assertEqual(len(captured), 1, captured)
-        self.assertIn('--state-dir .pikpakget', captured[0])
+        self.assertIn(os.path.join(self.home, 'state.json'), captured[0])
+        self.assertIn('--dest', captured[0], 'it has to say how to make us see it')
 
-    def test_no_notice_when_the_old_place_is_the_one_in_use(self):
-        import pikpakget.cli as cli
+    def test_no_notice_when_nothing_else_has_a_journal(self):
         captured = []
-        old = tempfile.mkdtemp()
-        os.makedirs(os.path.join(old, '.pikpakget'))
-        with open(os.path.join(old, '.pikpakget', 'state.json'), 'w') as handle:
-            handle.write('{}')
-        original = os.getcwd()
-        os.chdir(old)
-        self.addCleanup(os.chdir, original)
-        args = argparse.Namespace(state_dir=os.path.join(old, '.pikpakget'))
-        cli._warn_about_legacy_state(args, lambda message, level='info': captured.append(message))
-        self.assertEqual(captured, [])
-
-    def test_no_notice_for_a_brand_new_user(self):
-        import pikpakget.cli as cli
-        captured = []
-        original = os.getcwd()
-        os.chdir(tempfile.mkdtemp())
-        self.addCleanup(os.chdir, original)
-        cli._warn_about_legacy_state(argparse.Namespace(state_dir=tempfile.mkdtemp()),
-                                    lambda message, level='info': captured.append(message))
+        self.cli._warn_about_legacy_state(self.resolve(),
+                                          lambda m, level='info': captured.append(m))
         self.assertEqual(captured, [])
 
 
@@ -736,24 +795,25 @@ class TestPreflightSurvivesItsOwnSubject(unittest.TestCase):
             pass
         self.unusable = os.path.join(blocker, 'sub')       # cannot exist: parent is a file
 
-    def test_doctor_reports_an_unusable_state_directory_instead_of_crashing(self):
+    def test_doctor_reports_an_unusable_directory_instead_of_crashing(self):
         import contextlib
         import io
         buffer = io.StringIO()
-        with contextlib.redirect_stderr(buffer):
-            code = self.cli.main(['--doctor', '--dest', self.unusable,
-                                  '--state-dir', self.unusable])
+        with contextlib.redirect_stdout(buffer):
+            code = self.cli.main(['--doctor', '--dest', self.unusable])
         self.assertEqual(code, 1)
-        self.assertIn('状态目录不可用', buffer.getvalue())
+        text = buffer.getvalue()
+        self.assertIn('库目录', text)
+        self.assertIn('建不出来', text, 'the preflight names the path it cannot build')
 
     def test_an_ordinary_run_refuses_with_an_exit_code_not_a_traceback(self):
         import contextlib
         import io
         buffer = io.StringIO()
         with contextlib.redirect_stderr(buffer):
-            code = self.cli.main(['--status', '--state-dir', self.unusable])
+            code = self.cli.main(['--status', '--dest', self.unusable])
         self.assertEqual(code, 2)
-        self.assertIn('状态目录不可用', buffer.getvalue())
+        self.assertIn('进度目录不可用', buffer.getvalue())
 
     def test_doctor_creates_a_directory_a_run_would_have_created(self):
         import contextlib

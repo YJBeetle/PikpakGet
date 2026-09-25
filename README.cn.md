@@ -71,11 +71,11 @@ python3 -m pikpakget links.txt --max-files 5   # 先试一小口
 
 | 参数 | 默认 | 含义 |
 |---|---|---|
-| `--dest DIR` | `./downloads` | 库根目录；每个分组落成 `DIR/<文件夹>/` |
-| `--state-dir DIR` | `~/.pikpakget` | 会话、设备号、`state.json`、单实例锁 —— 跟着用户走，不跟着当前目录走 |
+| `--dest DIR` | `~/Downloads/PikPak` | 库根目录；每个分组落成 `DIR/<文件夹>/`。进度记的是绝对路径，换 `--dest` 等于开第二个库 —— 想固定下来用 `--set-config dest=...` |
+| `--set-config KEY=VALUE` | — | 把 `dest` 记进 `~/.pikpakget/config.json` 后退出，下次不用带参数（`--set-config dest=` 清掉）。只有 `dest` 可记 |
 | `--connections N` | `4` | 单文件用几条分段连接；`1` 就是普通单流下载 |
 | `--gap SEC` | `20` | 文件之间歇一下，压低请求密度 |
-| `--log PATH` | `~/.pikpakget/grab-<日期>.log` | 传 `-` 表示只输出到终端 |
+| `--log PATH` | 进度目录里的 `grab-<日期>.log` | 传 `-` 表示只输出到终端 |
 | `--repeat N` | `0`（一轮） | 多轮扫尾，回头补之前失败的；整轮零进展就停 |
 | `--limit N` / `--max-files N` | `0`（不限） | 最多处理 N 个链接 / N 个文件 |
 | `--inventory` | 关 | 只统计每个链接的文件数/字节/最大单文件，不下载 |
@@ -160,11 +160,24 @@ id，你自己放的文件和目录一律不碰（`--no-sweep` 可关闭）。
 
 ## 日志
 
-终端里看到的同样内容会追加到 `~/.pikpakget/grab-<日期>.log` —— 因为多天的任务活得
-比终端久。`--log -` 可以关掉。这个目录里还有 `state.json`、会话和设备号；它是刻意跟着
-用户走而不是跟着当前目录走的，这样无论从哪个目录启动，进度和登录状态都是同一份。克隆
-目录里现在什么都不写了；`.gitignore` 仍然覆盖旧版本留下的仓库内 `.pikpakget/`，而且
-旁边有那样一份旧进度时，启动会主动说一声。
+终端里看到的同样内容会追加到进度目录里的 `grab-<日期>.log` —— 因为多天的任务活得
+比终端久。`--log -` 可以关掉。位置规则见下面《目录放在哪儿》：默认库的一切都在
+`~/.pikpakget/`，换库时跟着库走的只有进度、锁和日志。仓库目录里现在什么都不写；
+`.gitignore` 仍然覆盖旧版本留下的仓库内 `.pikpakget/`，而且旁边有那样一份旧进度时，
+启动会主动说一声。
+
+## 目录放在哪儿
+
+| 目录 | 装什么 |
+|---|---|
+| `~/.pikpakget/` | 会话（`session.json`，0600）、设备号、`config.json` |
+| `~/.pikpakget/`（同一处） | `state.json`、单实例锁、日志 —— 只要用的是 `config.json` 里记的那个库（或内置默认 `~/Downloads/PikPak`） |
+| `<库>/.pikpakget/` | 用的库不是"记住的那个"时，这三样改放这里 |
+
+背后两条规则：库靠路径识别，所以把 `--dest` 指到新地方就是开第二个库，而不是接着跑；
+第二个库只带走**进度**，带不走**登录** —— 会话始终在 `~/.pikpakget/`，一次 `--login`
+对所有库有效。进度跟着非默认库走，是因为那正是"盘被两台机器共用"的情形：同一块盘
+必须能回答"这里已经下过什么"，而且两边答案一样。
 
 ## 完整性校验
 
@@ -186,6 +199,9 @@ SHA-1"，切块大小由上传者当时用的客户端决定：26 个文件的�
 
 ## 安全说明
 
+- 非默认库会把自己的 `state.json` 放在 `<库>/.pikpakget/` 里。进度文件记着真实的分享
+  链接、云盘 file id 和本地路径，所以这个名字在 `.gitignore` 里是**不限层级**地忽略的
+  —— 别把任何一份提交上去。
 - `~/.pikpakget/` 存着你的会话（`access_token`、一次一换的 `refresh_token`），已在
   `.gitignore` 内，会话文件写成 `0600`；`--logout` 会删掉它。
 - `pikpakget/api.py` 里的 `CLIENT_ID` / `CLIENT_SECRET` 是官方客户端的**公开应用
@@ -200,7 +216,7 @@ pikpakget/api.py       HTTP 客户端：会话、验证码签名、分享/云盘
 pikpakget/stream.py    单流断点续传、多分段并发、内容 hash 规则
 pikpakget/pipeline.py  链接解析、状态日志、配额逻辑、status/inventory/verify
 pikpakget/cli.py       参数解析、单实例锁、信号处理
-tests/test_pure.py     160 项纯逻辑测试；不涉及账号、不联网
+tests/test_pure.py     165 项纯逻辑测试；不涉及账号、不联网
 tests/test_transfer.py   5 项真下载测试：本地 HTTP + 真 curl
 ```
 
@@ -244,7 +260,7 @@ python3 -m unittest discover -s tests -t . -v
 
 ## 换一台机器之前
 
-`python3 -m pikpakget --doctor --dest <你打算存放的目录> --state-dir <你打算放状态的目录>`
+`python3 -m pikpakget --doctor --dest <你打算存放的目录>`
 回答的是"这台机器撑得住吗"：Python 版本底线、`curl`（只有分段下载需要它，
 `--connections 1` 不需要）、解释器的 SHA-1 能不能用（FIPS 会拒）、两个目录是否存在可写且
 空间够、锁有没有被别的实例占着、会话还剩多久，以及配额和云盘上的残留副本。它不需要 links
