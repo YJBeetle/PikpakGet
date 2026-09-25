@@ -21,6 +21,22 @@ except ImportError:                                # Windows: no POSIX locks
 STOP = False
 
 
+def _confirm_cloud_cleanup(items, owned_ids, label, log):
+    log(f'账号 {label} 空间不足；Pack From Shared 中有 {len(items)} 项可清理：', 'warn')
+    for item in items[:10]:
+        owner = '本库记录' if item['id'] in owned_ids else '归属未知'
+        log(f'  {item.get("name") or "(无名称)"} ({owner}，ID: {item["id"]})', 'warn')
+    if len(items) > 10:
+        log(f'  另有 {len(items) - 10} 项未列出', 'warn')
+    if not sys.stdin.isatty():
+        log('当前没有交互终端，无法确认清理；请在终端重跑', 'error')
+        return False
+    try:
+        return input('只永久删除上述 Pack From Shared 项目及其内容？输入“删除”确认：').strip() == '删除'
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
 def _install_stop_handler():
     def handler(signum, frame):                                # noqa: ARG001
         global STOP
@@ -194,8 +210,6 @@ def build_parser():
                         help='plan only; no restore, download or cloud cleanup')
     parser.add_argument('--no-delete', action='store_true',
                         help='keep the cloud copies after downloading (fills the quota fast)')
-    parser.add_argument('--purge-trash', action='store_true',
-                        help='allow emptying the whole trash when the quota is the blocker')
     parser.add_argument('--yes', action='store_true', help='ignore unparsable link lines')
     parser.add_argument('--log', default='auto', help="write a log file into the progress "
                                                      "directory (default), or '-' to log "
@@ -349,7 +363,9 @@ def _commands(args, log):
                     if remaining_files:
                         args.max_files = remaining_files
                     pipeline = Pipeline(args, log, stop=lambda: STOP, client=client,
-                                        account_id=item['id'], workspace_id=workspace_id)
+                                        account_id=item['id'], workspace_id=workspace_id,
+                                        confirm_cleanup=lambda items, owned: _confirm_cloud_cleanup(
+                                            items, owned, item['label'], log))
                     if args.doctor:
                         return pipeline.doctor()
                     if args.whoami:

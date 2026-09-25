@@ -173,7 +173,7 @@ class RunLinkHarness(unittest.TestCase):
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'), dest=self.lib,
                                   max_files=0, connections=1, gap=0, repeat=0,
                                   dry_run=False, inventory_only=False, limit=0,
-                                  purge_trash=False, no_delete=True)
+                                  no_delete=True)
         self.pipeline = Pipeline(args, Log(quiet=True))
         self.pipeline.quota_limit = 6442450944
         self.pipeline.space = lambda: {'limit': 6442450944, 'usage': 0, 'in_trash': 0,
@@ -484,7 +484,7 @@ class TestPipelineStartup(unittest.TestCase):
         state_dir = self.make_state(dirpath, local)
         args = argparse.Namespace(state_dir=state_dir, dest=os.path.join(dirpath, 'lib'),
                                   max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
-                                  inventory_only=False, limit=0, purge_trash=False,
+                                  inventory_only=False, limit=0,
                                   no_delete=True)
         pipeline = Pipeline(args, Log(quiet=True))
         self.assertIsInstance(pipeline._case_folded, bool)
@@ -505,7 +505,7 @@ class TestStatusWithoutProgress(unittest.TestCase):
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
                                   dest=os.path.join(self.dir, 'lib'), max_files=0,
                                   connections=1, gap=0, repeat=0, dry_run=False,
-                                  inventory_only=False, limit=0, purge_trash=False,
+                                  inventory_only=False, limit=0,
                                   no_delete=True)
         os.makedirs(args.dest)
         self.pipeline = Pipeline(args, Log(quiet=True))
@@ -793,7 +793,7 @@ class TestPreflightSurvivesItsOwnSubject(unittest.TestCase):
         dest = os.path.join(self.dir, 'new', 'library')
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'), dest=dest,
                                   max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
-                                  inventory_only=False, limit=0, purge_trash=False,
+                                  inventory_only=False, limit=0,
                                   no_delete=True, doctor=False)
         pipeline = Pipeline(args, Log(quiet=True))
         buffer = io.StringIO()
@@ -808,7 +808,7 @@ class TestPreflightSurvivesItsOwnSubject(unittest.TestCase):
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state2'),
                                   dest=self.unusable, max_files=0, connections=1, gap=0,
                                   repeat=0, dry_run=False, inventory_only=False, limit=0,
-                                  purge_trash=False, no_delete=True)
+                                  no_delete=True)
         self.assertEqual(Pipeline(args, Log(quiet=True)).run([]), 2)
 
 
@@ -913,7 +913,7 @@ class TestVolumeFolding(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'), dest=self.dir,
                                   max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
-                                  inventory_only=False, limit=0, purge_trash=False,
+                                  inventory_only=False, limit=0,
                                   no_delete=True)
         self.pipeline = Pipeline(args, Log(quiet=True))
         self.dest = os.path.join(self.dir, 'Series')
@@ -1029,6 +1029,86 @@ class TestShareTruncationFlag(unittest.TestCase):
         self.assertTrue(all('parent_id' not in request for request in requests))
 
 
+class TestRestorePlacement(unittest.TestCase):
+    def test_copy_in_pack_from_shared_is_tracked_by_new_id(self):
+        from pikpakget.pipeline import Log, Pipeline
+
+        class Cloud:
+            def __init__(self):
+                self.folders = {
+                    '*': [{'id': 'pack', 'name': 'Pack From Shared', 'kind': 'drive#folder'}],
+                    'pack': [{'id': 'old', 'name': 'movie.mp4', 'size': '100',
+                              'hash': 'ABCD', 'kind': 'drive#file'}]}
+
+            def list_folder(self, parent_id):
+                return list(self.folders[parent_id])
+
+            def restore(self, share_id, token, ids, parent_id):
+                self.folders['pack'].append({'id': 'new', 'name': 'movie(1).mp4',
+                                             'size': '100', 'hash': 'ABCD',
+                                             'kind': 'drive#file'})
+                return {'restore_status': 'RESTORE_START'}
+
+        cloud = Cloud()
+        args = argparse.Namespace(state_dir=tempfile.mkdtemp(), max_files=0)
+        pipeline = Pipeline(args, Log(quiet=True), client=cloud,
+                            workspace_id='pack', account_id='account')
+        node = {'id': 'source', 'name': 'movie.mp4', 'size': 100, 'hash': 'ABCD'}
+        record = pipeline.state.file('source', 'share\tfolder')
+        self.assertEqual(pipeline.restore_one({'share_id': 'share'}, node, record, 'token'), 'new')
+        self.assertEqual([item['id'] for item in cloud.folders['pack']], ['old', 'new'])
+        self.assertEqual(record['restored_id'], 'new')
+
+    def test_empty_restore_folder_cannot_reclaim_space(self):
+        from pikpakget.pipeline import Log, Pipeline
+
+        class Cloud:
+            def list_folder(self, parent_id):
+                self.parent_id = parent_id
+                return []
+
+            def cleanup(self, ids):
+                raise AssertionError('empty folder must not trigger deletion')
+
+        cloud = Cloud()
+        args = argparse.Namespace(state_dir=tempfile.mkdtemp(), max_files=0)
+        pipeline = Pipeline(args, Log(quiet=True), client=cloud,
+                            workspace_id='pack', account_id='account')
+        self.assertFalse(pipeline.reclaim_workspace(100))
+        self.assertEqual(cloud.parent_id, 'pack')
+
+    def test_reclaim_requires_confirmation_and_deletes_only_pack_children(self):
+        from pikpakget.pipeline import Log, Pipeline
+
+        class Cloud:
+            def __init__(self):
+                self.items = [{'id': 'old', 'name': 'old.mp4', 'size': 100}]
+                self.deleted = []
+
+            def list_folder(self, parent_id):
+                if parent_id != 'pack':
+                    raise AssertionError('must never inspect another folder')
+                return list(self.items)
+
+            def cleanup(self, ids):
+                self.deleted.extend(ids)
+                self.items = []
+
+        cloud = Cloud()
+        args = argparse.Namespace(state_dir=tempfile.mkdtemp(), max_files=0)
+        decisions = []
+        pipeline = Pipeline(args, Log(quiet=True), client=cloud,
+                            workspace_id='pack', account_id='account',
+                            confirm_cleanup=lambda items, owned: decisions.append(items) or False)
+        self.assertFalse(pipeline.reclaim_workspace(100))
+        self.assertEqual(cloud.deleted, [])
+        pipeline.confirm_cleanup = lambda items, owned: True
+        pipeline.space = lambda: {'usage': 100, 'free': 1000}
+        pipeline.wait_space_freed = lambda size, before: None
+        self.assertTrue(pipeline.reclaim_workspace(100))
+        self.assertEqual(cloud.deleted, ['old'])
+
+
 class TestLinkIdentity(unittest.TestCase):
     """A link is identified by URL *and* folder, and leftovers from earlier lists
     must not make a clean run look unfinished."""
@@ -1055,7 +1135,7 @@ class TestLinkIdentity(unittest.TestCase):
         dirpath = tempfile.mkdtemp()
         args = argparse.Namespace(state_dir=os.path.join(dirpath, '.state'), dest=dirpath,
                                   max_files=0, connections=1, gap=0, repeat=0, dry_run=False,
-                                  inventory_only=False, limit=0, purge_trash=False,
+                                  inventory_only=False, limit=0,
                                   no_delete=True)
         pipeline = Pipeline(args, Log(quiet=True))
         pipeline.space = lambda: {'limit': 6_000_000_000, 'usage': 0, 'in_trash': 0,
@@ -1660,7 +1740,7 @@ class TestStopOnZeroProgress(unittest.TestCase):
         args = argparse.Namespace(state_dir=os.path.join(self.dir, '.state'),
                                   dest=os.path.join(self.dir, 'lib'), max_files=0,
                                   connections=1, gap=0, repeat=0, dry_run=False,
-                                  inventory_only=False, limit=0, purge_trash=False,
+                                  inventory_only=False, limit=0,
                                   no_delete=False, log='-', quiet=True)
         self.pipeline = Pipeline(args, Log(quiet=True))
         os.makedirs(args.dest, exist_ok=True)

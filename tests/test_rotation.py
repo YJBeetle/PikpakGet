@@ -82,10 +82,12 @@ class TestAccountRotation(unittest.TestCase):
                 return None, None
 
             def client(self, item, logger=None):
-                return type('FakeClient', (), {'prepare_workspace': lambda self: 'folder'})()
+                return type('FakeClient', (), {
+                    'prepare_workspace': lambda self, **kwargs: 'folder'})()
 
         class Pipeline:
-            def __init__(self, args, log, stop, client, account_id, workspace_id):
+            def __init__(self, args, log, stop, client, account_id, workspace_id,
+                         confirm_cleanup):
                 self.account_id = account_id
                 self.files_done = 0
 

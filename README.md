@@ -39,7 +39,7 @@ https://mypikpak.com/s/SHARE_ID_2	Series
 
 Links without a folder name go to `(unfiled)`. You can also pass a CSV or TSV file containing `url,folder` pairs with `--folder-map`.
 
-**Before the first download, reserve the `.pikpakget` folder at the root of each account's cloud drive for this tool.** Whenever a download run starts using an account, it permanently deletes everything inside that account's folder. `--dry-run`, `--inventory`, `--status`, `--verify`, and `--doctor` do not perform this cleanup. `--purge-trash` separately allows the tool to empty the account's entire trash when space is insufficient.
+The cloud staging folder is `Pack From Shared`. Starting a run does not clear it. If a file cannot fit in the available cloud space, the tool lists that folder's contents and waits for you to type `删除` before deleting them. A noninteractive run does not delete them. If the folder is empty or clearing it still leaves too little space, that file is marked failed. Cleanup is limited to `Pack From Shared`.
 
 ## Common commands
 
@@ -64,8 +64,7 @@ Links without a folder name go to `(unfiled)`. You can also pass a CSV or TSV fi
 | `--limit N` | unlimited | Process only the first N links |
 | `--repeat N` | `0` | Maximum list passes; 0 means one pass |
 | `--gap SEC` | `20` | Seconds to wait between files |
-| `--no-delete` | off | Keep this run's cloud copies; the next download run still clears the staging folder |
-| `--purge-trash` | off | Allow emptying the entire account trash when space runs out |
+| `--no-delete` | off | Keep this run's cloud copies; low space may later prompt to clear them |
 | `--log -` | log file | Print only to the terminal |
 
 See `python3 -m pikpakget --help` for all options.

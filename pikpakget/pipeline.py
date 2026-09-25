@@ -19,7 +19,8 @@ import sys
 import tempfile
 import time
 
-from .api import (DOT_DIR_NAME, Client, PikPakError, TrafficCapped, account_dir,
+from .api import (DOT_DIR_NAME, Client, PikPakError, RestoreOutcomeUnknown,
+                 TrafficCapped, account_dir,
                  parse_share_url)
 from .stream import (PIECE_SIZES, SegmentRefused, download_segments, download_stream,
                      verify_content)
@@ -287,7 +288,7 @@ class State:
 
 class Pipeline:
     def __init__(self, args, log, stop=lambda: False, client=None,
-                 account_id=None, workspace_id=None):
+                 account_id=None, workspace_id=None, confirm_cleanup=None):
         self.args = args
         self.log = log
         self.stop = stop
@@ -301,14 +302,9 @@ class Pipeline:
         self.client = client or Client(session_path=None, logger=log)
         self.account_id = account_id
         self.workspace_id = workspace_id
+        self.confirm_cleanup = confirm_cleanup
         self.traffic_capped = False
         self.state = State(os.path.join(args.state_dir, 'state.json'))
-        if account_id and workspace_id:
-            # prepare_workspace emptied this account's staging folder before we got
-            # here; its old cloud ids cannot be resumed or cleaned again.
-            for rec in self.state.data['files'].values():
-                if rec.get('account_id') == account_id:
-                    rec['restored_id'] = None
         self.created = set()          # drive ids we made: the only ones we may delete
         for rec in self.state.data['files'].values():
             if (rec.get('restored_id') and rec.get('state') not in ('done', 'too_big')
@@ -423,25 +419,35 @@ class Pipeline:
         return self.restore_one(job, node, record, token)
 
     def restore_one(self, job, node, record, token):
-        """Restore one file id. The reply's `file_id` is not the copy that was just
-        made, so the new file is identified by diffing the listing and matching
-        its size."""
-        parent_id = self.workspace_id or '*'
-        snapshot = {item['id'] for item in self.client.list_folder(parent_id)}
-        made = self.client.restore(job['share_id'], token, [node['id']], parent_id)
+        """Identify the new copy in the one folder used for restores.
+
+        A name collision can rename the copy, so compare IDs, size and hash,
+        never the display name. An interruption before the ID is saved leaves
+        an unknown entry that requires confirmation if space later runs short.
+        """
+        if not self.workspace_id:
+            raise PikPakError('没有网盘临时目录 ID，停止转存')
+        workspace = self.workspace_id
+        workspace_before = {item['id'] for item in self.client.list_folder(workspace)}
+        made = self.client.restore(job['share_id'], token, [node['id']], workspace)
         record['restore_task_id'] = made.get('restore_task_id')
         status = str(made.get('restore_status') or '')
         if 'FAIL' in status.upper() or 'ERROR' in status.upper():
             raise PikPakError(f'转存被拒: {status} {json.dumps(made, ensure_ascii=False)[:200]}')
+
+        def candidates():
+            return [item for item in self.client.list_folder(workspace)
+                    if item['id'] not in workspace_before and item.get('kind') == 'drive#file'
+                    and not item.get('trashed')
+                    and (not node['size'] or int(item.get('size') or 0) == node['size'])
+                    and (not node.get('hash') or not item.get('hash')
+                         or item['hash'].upper() == node['hash'].upper())]
+
         deadline = time.time() + POLL_TIMEOUT
         while True:
-            fresh = [item for item in self.client.list_folder(parent_id)
-                     if item['id'] not in snapshot and item.get('kind') == 'drive#file'
-                     and not item.get('trashed')
-                     and (not node['size'] or int(item.get('size') or 0) == node['size'])
-                     and item.get('name') == node['name']]
+            fresh = candidates()
             if len(fresh) > 1:
-                raise PikPakError('转存后出现多个同名同大小的新文件，无法确认副本归属')
+                raise PikPakError('临时目录出现多个同大小的新文件，无法确认转存副本')
             if fresh:
                 restored = fresh[0]['id']
                 self.created.add(restored)
@@ -708,6 +714,32 @@ class Pipeline:
         self.created.difference_update(mine)
         self.wait_space_freed(size, before)
 
+    def reclaim_workspace(self, needed):
+        """Ask before deleting anything, and touch only Pack From Shared."""
+        if not self.workspace_id:
+            return False
+        items = self.client.list_folder(self.workspace_id)
+        if not items:
+            return False
+        owned = {rec['restored_id'] for rec in self.state.data['files'].values()
+                 if rec.get('account_id') == self.account_id and rec.get('restored_id')}
+        if not self.confirm_cleanup or not self.confirm_cleanup(items, owned):
+            self.log('用户未确认清理 Pack From Shared，保留其中内容', 'warn')
+            return False
+        ids = [item['id'] for item in items]
+        before = self.space()['usage']
+        self.client.cleanup(ids)
+        self.created.difference_update(ids)
+        for rec in self.state.data['files'].values():
+            if rec.get('account_id') == self.account_id and rec.get('restored_id') in ids:
+                rec['restored_id'] = None
+        self.state.save()
+        self.wait_space_freed(sum(int(item.get('size') or 0) for item in items), before)
+        remaining = self.client.list_folder(self.workspace_id)
+        if remaining:
+            raise PikPakError(f'Pack From Shared 清理后仍有 {len(remaining)} 项')
+        return self.space()['free'] >= needed
+
     # --------------------------------------------------------------------- drive
     def run_link(self, job):
         key = job.get('key') or job_key(job)
@@ -796,13 +828,31 @@ class Pipeline:
                          f'{node["name"][:40]}', 'warn')
                 continue
             space = self.space()
-            if space['limit'] and space['free'] < node['size'] + SPACE_HEADROOM:
-                self.log(f'云盘空间不足：需要 {human(node["size"])}，可用 {human(space["free"])}'
-                         f'（回收站占 {human(space["in_trash"])}）', 'error')
-                if not self.purge_trash():
+            needed = node['size'] + SPACE_HEADROOM
+            resumed = False
+            if record.get('restored_id') and record.get('account_id') == self.account_id:
+                try:
+                    cloud_file = self.client.file(record['restored_id'])
+                    resumed = (cloud_file.get('kind') == 'drive#file'
+                               and int(cloud_file.get('size') or 0) == node['size']
+                               and not cloud_file.get('trashed'))
+                except PikPakError:
+                    pass
+            if not resumed and space['limit'] and space['free'] < needed:
+                self.log(f'云盘空间不足：转存 {human(node["size"])} 需要约 {human(needed)}，'
+                         f'可用 {human(space["free"])}', 'warn')
+                try:
+                    reclaimed = self.reclaim_workspace(needed)
+                except PikPakError as error:
+                    reclaimed = False
+                    self.log(f'Pack From Shared 清理失败：{error}', 'warn')
+                if not reclaimed:
+                    record.update({'state': 'failed', 'error': '云盘空间不足，当前文件无法转存'})
                     link['status'] = 'partial'
                     self.state.save()
-                    return 'blocked'
+                    self.log(f'  [{position}/{len(files)}] 失败：云盘空间不足，无法转存 '
+                             f'{node["name"][:40]}', 'error')
+                    continue
             if shutil.disk_usage(self.args.dest).free < node['size'] + LOCAL_HEADROOM:
                 self.log(f'目标盘空间不足（还差 {human(node["size"])}），停止', 'error')
                 link['status'] = 'partial'
@@ -844,6 +894,12 @@ class Pipeline:
                 self.throttle_hits = 0      # the counter means *consecutive*
                 self.log(f'    {how}，云端已清理 -> {os.path.basename(local)[:56]}')
             except (PikPakError, OSError) as error:
+                if isinstance(error, RestoreOutcomeUnknown):
+                    record['state'] = 'retry'
+                    record['error'] = str(error)[:300]
+                    self.state.save()
+                    self.log('转存请求的结果未知，停止本轮；下次启动会检查云端副本', 'error')
+                    return 'throttled'
                 if isinstance(error, TrafficCapped):
                     # the cap is not this file's fault: hand back the attempt just
                     # spent so the next run still has the full budget for it
@@ -875,18 +931,6 @@ class Pipeline:
         if pending:
             self.log(f'{job["folder"]}: 仍有 {len(pending)} 个文件未完成', 'warn')
         return 'ok' if not pending else 'incomplete'
-
-    def purge_trash(self):
-        """Empty the trash to reclaim quota — only when the caller opted in, since
-        it is account-wide and cannot be undone."""
-        if not self.args.purge_trash:
-            return False
-        doomed = self.client.list_trash()
-        self.log(f'清空回收站：{len(doomed)} 项（'
-                 f'{human(sum(int(item.get("size") or 0) for item in doomed))}）', 'warn')
-        self.client.empty_trash()
-        time.sleep(POLL_INTERVAL)
-        return True
 
     def run(self, jobs):
         if self.args.dry_run:

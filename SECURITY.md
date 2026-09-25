@@ -16,9 +16,9 @@ The constants named `CLIENT_ID` and `CLIENT_SECRET` in `pikpakget/api.py` identi
 
 ## Cloud deletion
 
-An actual download run permanently deletes **all contents** of the selected account's cloud root `.pikpakget` folder before restoring files. Keep personal files out of that folder. `--purge-trash` is an additional option that can empty the account's entire trash.
+An actual download run uses the selected account's cloud root `Pack From Shared` folder. Starting a run does not clear it. If cloud space is insufficient for a file, the tool lists the folder's contents and requires the operator to type `删除` before permanently deleting those items. A noninteractive run does not delete them. If the folder is empty or clearing it is insufficient, the file fails. A restored copy whose ID was not saved before an interruption may appear as unknown in the confirmation list. No other cloud folder or account-wide trash is cleared to reclaim space.
 
-Account locks only protect processes on the same computer. Do not run separate installations against the same account's `.pikpakget` folder at the same time.
+Account locks only protect processes on the same computer. Do not run separate installations against the same account's `Pack From Shared` folder at the same time.
 
 ## Report a vulnerability
 

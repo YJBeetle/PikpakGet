@@ -122,6 +122,10 @@ class TrafficCapped(PikPakError):
     after it rolls over."""
 
 
+class RestoreOutcomeUnknown(PikPakError):
+    """The restore request may have succeeded despite losing its response."""
+
+
 def captcha_sign(client_id, device_id, timestamp=None):
     """The shield signature: an md5 chain over the salt list, fed with
     clientId + clientVersion + packageName + deviceId + timestamp. The server
@@ -390,6 +394,11 @@ class Client:
             last = {'status': status, **body}
             problem = str(body.get('error_description') or body.get('error') or '请求失败')
             if status is None:                          # socket/TLS/DNS level failure
+                if retries == 1:
+                    error_type = (RestoreOutcomeUnknown if path == '/v1/share/restore'
+                                  else PikPakError)
+                    raise error_type(f'网络请求结果未知，可能已生效: {problem[:160]}',
+                                     action=action)
                 wait = NETWORK_RETRY_WAITS[min(attempt, len(NETWORK_RETRY_WAITS) - 1)]
                 self.log(f'网络抖动（{problem[:70]}），{wait}s 后重试', 'warn')
                 time.sleep(wait)
@@ -447,13 +456,8 @@ class Client:
             'kind': 'drive#folder', 'name': name,
             'parent_id': '' if parent_id == '*' else parent_id})
 
-    def prepare_workspace(self, name=DOT_DIR_NAME):
-        """Own one dedicated cloud folder and clear it before a download run.
-
-        A duplicate same-name folder makes identity ambiguous, so fail closed.
-        The folder itself survives; only its immediate children are permanently
-        deleted. PikPak deletes a folder subtree when its folder id is deleted.
-        """
+    def prepare_workspace(self, name='Pack From Shared'):
+        """Find or create the restore folder without deleting its contents."""
         folders = [item for item in self.list_folder('*')
                    if item.get('name') == name and item.get('kind') == 'drive#folder']
         if len(folders) > 1:
@@ -465,22 +469,7 @@ class Client:
             folder_id = (created.get('file') or created).get('id')
             if not folder_id:
                 raise PikPakError(f'创建网盘文件夹 {name} 后没有收到 ID')
-        children = self.list_folder(folder_id)
-        if children:
-            self.cleanup([item['id'] for item in children])
-            deadline = time.monotonic() + 150
-            while True:
-                remaining = self.list_folder(folder_id)
-                if not remaining:
-                    break
-                if time.monotonic() >= deadline:
-                    raise PikPakError(f'网盘文件夹 {name} 清理后仍有 {len(remaining)} 项，停止使用此账号')
-                time.sleep(4)
         return folder_id
-
-    def list_trash(self):
-        return list(self._paginate('/v1/files', {'parent_id': '*', 'limit': 200,
-                                                 'trashed': 'true', 'order': 3}))
 
     def file(self, file_id):
         return self.call('GET', f'/v1/files/{file_id}')
@@ -563,10 +552,11 @@ class Client:
     def restore(self, share_id, pass_code_token, file_ids, parent_id='*'):
         """Copy shared files into this drive. `file_ids` may be files or folders;
         a folder copies its whole subtree, so pick folder ids deliberately when
-        the cloud quota is small."""
+        the cloud quota is small. This POST must not be retried blindly after
+        a network failure: the first attempt may already have made the copy."""
         return self.call('POST', '/v1/share/restore', json_body={
             'share_id': share_id, 'pass_code_token': pass_code_token,
-            'file_ids': list(file_ids), 'parent_id': parent_id})
+            'file_ids': list(file_ids), 'parent_id': parent_id}, retries=1)
 
     def task(self, task_id):
         return self.call('GET', f'/v1/tasks/{task_id}')
@@ -576,11 +566,6 @@ class Client:
 
     def batch_delete(self, ids):
         return self.call('POST', '/v1/files:batchDelete', json_body={'ids': list(ids)})
-
-    def empty_trash(self):
-        """Frees the whole trash. Destructive and account-wide: callers must show
-        what is in the trash first."""
-        return self.call('PATCH', '/v1/files/trash:empty')
 
     def cleanup(self, ids):
         """Trash then permanently delete our own copies, which is the only way to

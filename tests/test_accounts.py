@@ -104,6 +104,14 @@ class TestAccounts(unittest.TestCase):
 
 
 class TestCloudWorkspace(unittest.TestCase):
+    def test_restore_does_not_retry_an_ambiguous_post(self):
+        client = Client.__new__(Client)
+        calls = []
+        client.call = lambda method, path, **kwargs: calls.append((method, path, kwargs)) or {}
+        client.restore('share', 'token', ['file'], 'pack')
+        self.assertEqual(calls[0][2]['retries'], 1)
+        self.assertEqual(calls[0][2]['json_body']['parent_id'], 'pack')
+
     def test_root_requests_use_the_api_root_identifier(self):
         client = Client.__new__(Client)
         calls = []
@@ -135,15 +143,15 @@ class TestCloudWorkspace(unittest.TestCase):
         self.deleted.extend(ids)
         self.entries['workspace'] = []
 
-    def test_creates_dedicated_folder_and_clears_its_children(self):
+    def test_creates_restore_folder_without_clearing_its_children(self):
         self.entries['workspace'] = [{'id': 'old-file'}, {'id': 'old-subfolder'}]
         self.assertEqual(self.client.prepare_workspace(), 'workspace')
-        self.assertEqual(self.deleted, ['old-file', 'old-subfolder'])
+        self.assertEqual(self.deleted, [])
 
     def test_refuses_ambiguous_same_name_folders(self):
         self.entries['*'] = [
-            {'id': 'a', 'name': '.pikpakget', 'kind': 'drive#folder'},
-            {'id': 'b', 'name': '.pikpakget', 'kind': 'drive#folder'}]
+            {'id': 'a', 'name': 'Pack From Shared', 'kind': 'drive#folder'},
+            {'id': 'b', 'name': 'Pack From Shared', 'kind': 'drive#folder'}]
         with self.assertRaises(PikPakError):
             self.client.prepare_workspace()
         self.assertEqual(self.deleted, [])

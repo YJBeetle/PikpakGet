@@ -39,7 +39,7 @@ https://mypikpak.com/s/SHARE_ID_2	剧集
 
 没有指定文件夹的链接会放进 `(unfiled)`。也可以通过 `--folder-map` 传入 `url,folder` 格式的 CSV 或 TSV 文件。
 
-**首次实际下载前，请确认账号网盘根目录的 `.pikpakget` 文件夹只用于本工具。** 每次开始使用一个账号下载时，程序都会永久删除该账号这个文件夹内的全部内容。`--dry-run`、`--inventory`、`--status`、`--verify` 和 `--doctor` 不执行云端清理。`--purge-trash` 会清空账号的整个回收站，只有显式开启才会执行。
+网盘转存使用 `Pack From Shared` 文件夹。启动时不清理。只有待转存文件放不进网盘时，程序才列出该文件夹里的项目，等待你输入“删除”确认后清理。无人值守时不会清理；若文件夹为空或清理后仍放不下，当前文件会记为失败。清理范围只限 `Pack From Shared`。
 
 ## 常用命令
 
@@ -67,7 +67,6 @@ https://mypikpak.com/s/SHARE_ID_2	剧集
 | `--repeat N` | `0` | 最多扫描 N 轮；0 表示只扫一轮 |
 | `--gap SEC` | `20` | 文件之间的等待秒数 |
 | `--no-delete` | 关闭 | 暂时保留本次转存的云端副本；下一次实际下载启动时仍会清理 |
-| `--purge-trash` | 关闭 | 空间不足时允许清空整个账号回收站 |
 | `--log -` | 写入日志文件 | 只输出到终端 |
 
 其他选项见 `python3 -m pikpakget --help`。
