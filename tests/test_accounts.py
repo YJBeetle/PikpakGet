@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from pikpakget.accounts import Accounts
+from pikpakget.accounts import Accounts, TRAFFIC_RETRY_SECONDS
 from pikpakget.api import Client, PikPakError
 
 
@@ -56,6 +56,44 @@ class TestAccounts(unittest.TestCase):
                 second_lock.close()
         finally:
             first_lock.close()
+
+    def test_confirmed_traffic_cap_is_persistent_and_expires_after_an_hour(self):
+        first = self.login('one@example.com', 'user-1')
+        second = self.login('two@example.com', 'user-2')
+        registry = Accounts(self.home)
+        with mock.patch('pikpakget.accounts.time.time', return_value=1000):
+            lock = registry.acquire(first)
+            try:
+                registry.mark_traffic_capped(first)
+            finally:
+                lock.close()
+        path = os.path.join(registry.directory(first['id']), 'traffic_capped_at')
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        fresh = Accounts(self.home)
+        self.assertEqual(fresh.traffic_retry_at(first), 1000 + TRAFFIC_RETRY_SECONDS)
+        with mock.patch('pikpakget.accounts.time.time', return_value=4599):
+            selected, lock = fresh.choose(respect_cooldown=True)
+            self.assertEqual(selected['id'], second['id'])
+            lock.close()
+            selected, lock = fresh.choose()
+            self.assertEqual(selected['id'], first['id'])  # read-only commands can use it
+            lock.close()
+        with mock.patch('pikpakget.accounts.time.time', return_value=4600):
+            selected, lock = fresh.choose(respect_cooldown=True)
+            self.assertEqual(selected['id'], first['id'])
+            lock.close()
+
+    def test_a_second_confirmed_cap_moves_the_retry_time_forward(self):
+        item = self.login('one@example.com', 'user-1')
+        registry = Accounts(self.home)
+        for now in (1000, 4600):
+            with mock.patch('pikpakget.accounts.time.time', return_value=now):
+                lock = registry.acquire(item)
+                try:
+                    registry.mark_traffic_capped(item)
+                finally:
+                    lock.close()
+        self.assertEqual(Accounts(self.home).traffic_retry_at(item), 8200)
 
     def test_relogin_checks_known_account_lock_before_sign_in(self):
         item = self.login('one@example.com', 'user-1')

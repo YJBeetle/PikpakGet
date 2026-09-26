@@ -2,9 +2,13 @@
 import fcntl
 import hashlib
 import json
+import math
 import os
+import time
 
 from .api import Client, PikPakError, Session
+
+TRAFFIC_RETRY_SECONDS = 60 * 60
 
 
 class Accounts:
@@ -29,6 +33,37 @@ class Accounts:
 
     def device_path(self, account_id):
         return os.path.join(self.directory(account_id), 'device_id')
+
+    def traffic_retry_at(self, item):
+        """Return the next downstream retry time, or zero if none was recorded."""
+        path = os.path.join(self.directory(item['id']), 'traffic_capped_at')
+        try:
+            with open(path, encoding='ascii') as handle:
+                capped_at = float(handle.read().strip())
+        except FileNotFoundError:
+            return 0
+        except (OSError, ValueError) as error:
+            raise PikPakError(f'账号 {item["label"]} 的流量冷却记录无法读取：{path}（{error}）') from error
+        if not math.isfinite(capped_at) or capped_at < 0:
+            raise PikPakError(f'账号 {item["label"]} 的流量冷却记录无效：{path}')
+        return capped_at + TRAFFIC_RETRY_SECONDS
+
+    def mark_traffic_capped(self, item):
+        """Persist only a server-confirmed downstream cap, while holding its lock."""
+        directory = self.directory(item['id'])
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        path = os.path.join(directory, 'traffic_capped_at')
+        temporary = path + '.tmp'
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='ascii') as handle:
+                handle.write(f'{time.time():.6f}\n')
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
 
     def client(self, item, logger=None):
         device_path = self.device_path(item['id'])
@@ -139,13 +174,20 @@ class Accounts:
         handle.flush()
         return handle
 
-    def choose(self, excluded=(), only=None):
+    def choose(self, excluded=(), only=None, respect_cooldown=False):
         candidates = [self.find(only)] if only else self.items
         for item in candidates:
             if item['id'] in excluded:
                 continue
+            if respect_cooldown and self.traffic_retry_at(item) > time.time():
+                continue
             handle = self.acquire(item)
             if handle:
+                # Another process may have hit the cap while we were trying to
+                # acquire this lease. Check again while holding it.
+                if respect_cooldown and self.traffic_retry_at(item) > time.time():
+                    handle.close()
+                    continue
                 return item, handle
         return None, None
 
