@@ -2,6 +2,7 @@
 import argparse
 import getpass
 import json
+import math
 import os
 import signal
 import sys
@@ -47,6 +48,16 @@ def _install_stop_handler():
         print('\n收到中断：正在停止，已完成进度和当前下载片段会保留，重跑即续传', flush=True)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, handler)
+
+
+def _wait_for_traffic_retry(deadline):
+    """Wait without holding an account lease; Ctrl+C ends the wait promptly."""
+    while not STOP:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return True
+        time.sleep(min(1.0, remaining))
+    return False
 
 
 
@@ -334,8 +345,14 @@ def _commands(args, log):
                 _install_stop_handler()
             excluded = set()
             remaining_files = args.max_files
+            actual_download = bool(jobs and not (args.verify_only or args.dry_run
+                                                 or args.inventory_only))
             while True:
-                item, account_lock = registry.choose(excluded, only=args.account)
+                if STOP:
+                    log('已中断账号选择；进度已保存', 'warn')
+                    return 1
+                item, account_lock = registry.choose(
+                    excluded, only=args.account, respect_cooldown=actual_download)
                 if account_lock is None:
                     if not registry.items:
                         raise PikPakError('没有已登录账号；先运行 --login')
@@ -343,14 +360,28 @@ def _commands(args, log):
                                   if entry['id'] not in excluded and
                                   (not args.account or entry['id'] == registry.find(args.account)['id'])]
                     if not candidates:
-                        log('所有可用账号均已触及流量限制或初始化失败', 'error')
+                        log('所有候选账号均初始化失败', 'error')
                         return 1
+                    if actual_download:
+                        now = time.time()
+                        cooling = [(registry.traffic_retry_at(entry), entry)
+                                   for entry in candidates]
+                        cooling = [(deadline, entry) for deadline, entry in cooling
+                                   if deadline > now]
+                        if cooling:
+                            deadline, next_item = min(cooling, key=lambda pair: pair[0])
+                            log(f'暂无可下载账号；账号 {next_item["label"]} '
+                                f'约 {math.ceil((deadline - now) / 60)} 分钟后重试'
+                                f'（{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(deadline))}）',
+                                'warn')
+                            if not _wait_for_traffic_retry(deadline):
+                                log('等待账号流量恢复时已中断；进度已保存', 'warn')
+                                return 1
+                            continue
                     print('没有可用账号：所有账号都被其他进程锁定')
                     return 3
                 try:
                     client = registry.client(item, logger=log)
-                    actual_download = jobs and not (args.verify_only or args.dry_run
-                                                     or args.inventory_only)
                     if actual_download:
                         try:
                             workspace_id = client.prepare_workspace()
@@ -381,12 +412,13 @@ def _commands(args, log):
                         return pipeline.verify(jobs)
                     code = pipeline.run(jobs)
                     if code == 4:
+                        registry.mark_traffic_capped(item)
                         if remaining_files:
                             remaining_files -= pipeline.files_done
                             if remaining_files <= 0:
                                 return 1
-                        excluded.add(item['id'])
-                        log(f'账号 {item["label"]} 下行流量已满，尝试下一个账号', 'warn')
+                        log(f'账号 {item["label"]} 下行流量已满，1 小时后再试；'
+                            '现在尝试下一个账号', 'warn')
                         continue
                     return code
                 finally:

@@ -4,7 +4,7 @@ English | [中文](README.cn.md)
 
 PikpakGet downloads files from PikPak share links in sequence. It restores one file to an account's drive, downloads and checks it, removes the cloud copy, then moves to the next file. A share may be larger than the account's free drive space, but **each individual file must still fit**.
 
-You can save multiple accounts. When one account reaches its downstream traffic limit, the tool tries another account that is not locked by a local process. Downloads remain sequential; it does not download through several accounts at once.
+You can save multiple accounts. When the server reports that one account reached its downstream traffic limit, the tool records the time and tries another account that is not locked by a local process. That account becomes eligible again after one hour. Downloads remain sequential; it does not download through several accounts at once.
 
 ## Install
 
@@ -60,7 +60,7 @@ The cloud staging folder is `Pack From Shared`. At the start of a download, the 
 |---|---|---|
 | `--dest DIR` | `~/Downloads/PikPak` | Local library; share folders are kept beneath `DIR/<series>/` |
 | `--set-config dest=DIR` | unset | Remember a default library; `dest=` clears it |
-| `--account NAME` | automatic | Use only this account, by label or the ID shown by `--accounts` |
+| `--account NAME` | automatic | Use only this account, by label or the ID shown by `--accounts`; wait an hour after a traffic cap before retrying |
 | `--connections N` | `1` | Connections per file; values above 1 use `curl` segments |
 | `--max-files N` | unlimited | Limit file processing; failed attempts may also use a slot |
 | `--limit N` | unlimited | Process only the first N links |
@@ -81,12 +81,13 @@ A library keeps its progress, lock, and logs in `DIR/.pikpakget/`. Only one down
 └── accounts/<account ID>/
     ├── device_id                 # specific to this account
     ├── session.json              # login tokens
-    └── lock                      # local account lock
+    ├── lock                      # local account lock
+    └── traffic_capped_at         # latest confirmed downstream cap time, if any
 ```
 
 The account ID is derived from the server user ID. Signing in again to the same account keeps its device ID. Changing `--dest` selects a separate progress journal. Account locks only coordinate processes on the same computer; they cannot coordinate another computer using the same account or cloud folder.
 
-Rerun the same command to continue unfinished files. Completed shares are listed again so newly added files can be found. If an account reaches its daily downstream limit, the tool tries the next available account. If all accounts are occupied by local processes, it reports “no available account.”
+Rerun the same command to continue unfinished files. Completed shares are listed again so newly added files can be found. If the server reports a downstream traffic cap, the tool tries the next available account. If all accounts are cooling, it waits for the earliest one-hour retry time; another cap restarts that account's timer. An hour is a retry interval, not a guarantee that the server quota has reset. Ctrl+C interrupts the wait. If all accounts are occupied by local processes, it reports “no available account.” Session and workspace failures do not start traffic cooldowns.
 
 ## Verification and limits
 

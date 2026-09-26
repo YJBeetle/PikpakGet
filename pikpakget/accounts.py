@@ -55,6 +55,7 @@ class Accounts:
         path = os.path.join(directory, 'traffic_capped_at')
         temporary = path + '.tmp'
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(descriptor, 0o600)
         try:
             with os.fdopen(descriptor, 'w', encoding='ascii') as handle:
                 handle.write(f'{time.time():.6f}\n')

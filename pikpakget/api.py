@@ -406,7 +406,7 @@ class Client:
                 continue
             if TRAFFIC_CAP.search(problem) or TRAFFIC_CAP.search(str(body)):
                 # a fact about the account today, not about this file: no back-off
-                # ladder and no retries, the run simply ends and is re-run later
+                # ladder here; the account scheduler handles rotation and retry
                 raise TrafficCapped(f'今日下行流量已到上限: {problem[:160]}', status=status,
                                     code=body.get('error_code'), action=action)
             throttled = self._throttled(status, body)
