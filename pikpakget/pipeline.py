@@ -1078,10 +1078,10 @@ class Pipeline:
             if pass_number > (self.args.repeat or 1):
                 break
             tally, before_done, before_bytes = collections.Counter(), self.files_done, self.bytes_done
-            for job in jobs:
+            for position, job in enumerate(jobs, 1):
                 if self.stop():
                     break
-                self.log(f'— 第{pass_number}轮 [{job["order"]}/{len(jobs)}] {job["url"]}')
+                self.log(f'— 第{pass_number}轮 [{position}/{len(jobs)}] {job["url"]}')
                 tally[self.run_link(job)] += 1
                 if tally.get('throttled') or self.stop():
                     break
