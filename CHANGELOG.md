@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Accept multiple link text files in one command and process links in argument order, then line order. Preserve each link's chosen series directory and apply `--limit` to the combined list.
+
 - Discard a file's `.part` and segment fragments before downloading when no matching file progress record exists. Other fragments remain untouched.
 
 - Store progress, logs and locks under each series directory, with relative local paths. The old root journal is no longer read or migrated.

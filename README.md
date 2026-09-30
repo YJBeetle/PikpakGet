@@ -28,6 +28,9 @@ python3 -m pikpakget --accounts
 # Inspect the plan, then download.
 python3 -m pikpakget links.txt --dry-run --dest /path/to/library
 python3 -m pikpakget links.txt --dest /path/to/library
+
+# Process several link files in argument order, then line order.
+python3 -m pikpakget catalogue/嗷大喵.txt catalogue/FXX.txt --dest /path/to/library
 ```
 
 Put one share link on each line of `links.txt`. Blank lines and lines starting with `#` are ignored. Add a folder name after a tab to choose where the link's files land locally:
@@ -37,7 +40,7 @@ https://mypikpak.com/s/SHARE_ID_1	Movies
 https://mypikpak.com/s/SHARE_ID_2	Series
 ```
 
-Links without a folder name go to `(unfiled)`. You can also pass a CSV or TSV file containing `url,folder` pairs with `--folder-map`.
+Links without a folder name go to `(unfiled)`. You can also pass a CSV or TSV file containing `url,folder` pairs with `--folder-map`. With multiple text files, each link still uses its own row's folder; the text file's name does not choose a download folder. `--limit` applies to the first N links across all input files.
 
 The local library keeps the share's folder tree beneath the chosen series folder. For example, a file in the share's `Studio/Unnumbered` folders goes to `DIR/Series/Studio/Unnumbered/`. A share containing one root file, or several root files without a folder, puts those files directly in `DIR/Series/`. The share title is not used as a directory name. Empty share folders are created, too. The tool does not move files from the previous flat layout; if an old path differs from the new path, it downloads to the new location.
 

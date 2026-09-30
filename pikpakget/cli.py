@@ -171,7 +171,8 @@ def build_parser():
         prog='pikpakget',
         description='Sequentially grab PikPak share links, one file at a time, '
                     'working around a small cloud quota.')
-    parser.add_argument('links', nargs='?', help='text file, one share link per line '
+    parser.add_argument('links', nargs='*', help='text files in processing order, '
+                                                 'one share link per line '
                                                  '(optionally "<url>\\t<folder>")')
     parser.add_argument('--login', metavar='USERNAME', nargs='?', const='',
                         help='sign in and store a '
@@ -334,8 +335,14 @@ def _commands(args, log):
             return 0
         jobs = None
         if args.links:
-            jobs, problems = read_links(args.links, load_folder_map(args.folder_map),
-                                       args.default_folder)
+            jobs, problems = [], []
+            folder_map = load_folder_map(args.folder_map)
+            for path in args.links:
+                batch, issues = read_links(path, folder_map, args.default_folder)
+                for job in batch:
+                    job['order'] = len(jobs) + 1
+                    jobs.append(job)
+                problems.extend(issues)
             for problem in problems:
                 log(problem, 'error')
             if problems and not args.yes:
@@ -343,19 +350,23 @@ def _commands(args, log):
             if not jobs:
                 raise PikPakError('链接文件里没有可用链接')
         elif not (args.doctor or args.status_only or args.whoami):
-            build_parser().error('a links file is required (or use --login/--whoami/--status)')
+            build_parser().error('one or more links files are required '
+                                 '(or use --login/--whoami/--status)')
         if jobs:
             _install_stop_handler()
             jobs = jobs[:args.limit or len(jobs)]
-        grouped = {}
+        grouped = []
         if jobs and not args.inventory_only and (not args.dry_run or args.verify):
             for job in jobs:
-                grouped.setdefault(job['folder'], []).append(job)
+                if grouped and grouped[-1][0] == job['folder']:
+                    grouped[-1][1].append(job)
+                else:
+                    grouped.append((job['folder'], [job]))
         else:
-            grouped[None] = jobs
+            grouped.append((None, jobs))
         remaining_files = args.max_files
         result = 0
-        for folder, group in grouped.items():
+        for folder, group in grouped:
             selected = series_args(args, folder) if folder else copy.copy(args)
             selected.limit = 0
             if args.max_files:

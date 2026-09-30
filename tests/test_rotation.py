@@ -26,13 +26,16 @@ class TestAccountRotation(unittest.TestCase):
             a.close()
             b.close()
 
-    def test_multi_series_jobs_get_separate_journals(self):
+    def test_multiple_text_files_keep_input_order_and_series_journals(self):
         root = tempfile.mkdtemp()
-        links = os.path.join(root, 'links.txt')
-        with open(links, 'w', encoding='utf-8') as handle:
+        first = os.path.join(root, '嗷大喵.txt')
+        second = os.path.join(root, 'xxx.txt')
+        with open(first, 'w', encoding='utf-8') as handle:
             handle.write('https://mypikpak.com/s/EXAMPLEID1111111111\tA\n')
+        with open(second, 'w', encoding='utf-8') as handle:
             handle.write('https://mypikpak.com/s/EXAMPLEID2222222222\tB\n')
-        args = cli.build_parser().parse_args([links, '--dest', os.path.join(root, 'dest'),
+            handle.write('https://mypikpak.com/s/EXAMPLEID3333333333\tA\n')
+        args = cli.build_parser().parse_args([first, second, '--dest', os.path.join(root, 'dest'),
                                               '--log', '-'])
         cli.resolve_dirs(args)
         seen = []
@@ -57,7 +60,8 @@ class TestAccountRotation(unittest.TestCase):
                 self.files_done = 0
 
             def run(self, jobs):
-                seen.append((self.args.state_dir, [job['folder'] for job in jobs]))
+                seen.append((self.args.state_dir,
+                             [(job['share_id'], job['folder'], job['order']) for job in jobs]))
                 return 0
 
         with mock.patch.object(cli, 'Accounts', Registry), \
@@ -65,9 +69,19 @@ class TestAccountRotation(unittest.TestCase):
                 mock.patch.object(cli, '_acquire_lock', return_value=Lock()), \
                 mock.patch.object(cli, '_install_stop_handler'):
             self.assertEqual(cli._commands(args, Log(quiet=True)), 0)
+            args.limit = 2
+            self.assertEqual(cli._commands(args, Log(quiet=True)), 0)
         self.assertEqual(seen, [
-            (os.path.join(args.dest, 'A', '.pikpakget'), ['A']),
-            (os.path.join(args.dest, 'B', '.pikpakget'), ['B'])])
+            (os.path.join(args.dest, 'A', '.pikpakget'),
+             [('EXAMPLEID1111111111', 'A', 1)]),
+            (os.path.join(args.dest, 'B', '.pikpakget'),
+             [('EXAMPLEID2222222222', 'B', 2)]),
+            (os.path.join(args.dest, 'A', '.pikpakget'),
+             [('EXAMPLEID3333333333', 'A', 3)]),
+            (os.path.join(args.dest, 'A', '.pikpakget'),
+             [('EXAMPLEID1111111111', 'A', 1)]),
+            (os.path.join(args.dest, 'B', '.pikpakget'),
+             [('EXAMPLEID2222222222', 'B', 2)])])
 
     def test_cloud_cleanup_defaults_to_no(self):
         items = [{'id': 'old', 'name': 'old.mp4'}]
