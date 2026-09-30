@@ -9,7 +9,6 @@ interrupted run resumable and a re-run harmless.
 """
 import collections
 import csv
-import glob as _glob
 import json
 import os
 import re
@@ -688,6 +687,27 @@ class Pipeline:
             raise PikPakError(f'下载不完整 {written}/{expected}')
         return self.promote(part, final, node, record)
 
+    def discard_partial(self, final):
+        """Drop download fragments that have no matching progress record."""
+        partial = final + '.part'
+        removed = False
+        if os.path.isfile(partial) or os.path.islink(partial):
+            os.unlink(partial)
+            removed = True
+        parent = os.path.dirname(partial)
+        prefix = os.path.basename(partial) + '.segs'
+        for name in os.listdir(parent):
+            if not name.startswith(prefix):
+                continue
+            segments = os.path.join(parent, name)
+            if os.path.isdir(segments) and not os.path.islink(segments):
+                shutil.rmtree(segments)
+            else:
+                os.unlink(segments)
+            removed = True
+        if removed:
+            self.log(f'没有可信进度，已删除旧下载片段：{os.path.basename(final)[:56]}', 'warn')
+
     def existing_matches(self, path, node, record=None):
         """Adopt by path and size; --verify also checks a reported content hash."""
         if os.path.islink(path) or size_on_disk(path) != node['size']:
@@ -852,6 +872,7 @@ class Pipeline:
                 link['status'] = 'partial'
                 self.state.save()
                 return 'stopped'
+            recorded = file_key(key, node['id']) in self.state.data['files']
             record = self.state.file(node['id'], key)
             parent_dir = folder_paths.get(node.get('parent_id') or '')
             if parent_dir is None:
@@ -860,6 +881,8 @@ class Pipeline:
                 self.log(link['error'], 'error')
                 return 'error'
             planned_local = self.dest_path(node, parent_dir)
+            if not recorded:
+                self.discard_partial(planned_local)
             if record.get('local') != planned_local and not (
                     record.get('state') == 'unverified'
                     and record.get('home') == planned_local):
@@ -878,12 +901,7 @@ class Pipeline:
                 # right-sized splice of two different files.
                 home = record.get('home') or record.get('local')
                 if home:
-                    partial = home + '.part'
-                    if os.path.isfile(partial):
-                        os.remove(partial)
-                    for segments in _glob.glob(partial + '.segs*'):
-                        if os.path.isdir(segments):
-                            shutil.rmtree(segments)
+                    self.discard_partial(home)
                 record['state'] = 'pending'
             record['source_hash'] = node.get('hash')
             record.update({'name': node['name'], 'size': node['size'], 'path': node['path'],

@@ -188,7 +188,8 @@ class RunLinkHarness(unittest.TestCase):
         self.addCleanup(setattr, self.module, 'shutil', real_shutil)
         plenty = types.SimpleNamespace(free=100 << 40)
         self.module.shutil = types.SimpleNamespace(disk_usage=lambda path: plenty,
-                                                  which=real_shutil.which)
+                                                  which=real_shutil.which,
+                                                  rmtree=real_shutil.rmtree)
         self.pipeline.client.download_url = lambda fid: ('http://host/file', {})
         self.addCleanup(setattr, pipeline_module, 'download_stream', pipeline_module.download_stream)
         self.downloads = []
@@ -371,6 +372,73 @@ class TestExistingFileRecognition(RunLinkHarness):
             self.assertEqual(handle.read(), b'a' * 1024)
         self.assertEqual(self.downloads, [])
         self.assertEqual(self.pipeline.state.data['files'], {})
+
+
+class TestPartWithoutProgress(RunLinkHarness):
+    def test_existing_complete_file_still_clears_untracked_partial(self):
+        folder = os.path.join(self.lib, 'Series')
+        os.makedirs(folder)
+        final = os.path.join(folder, 'movie.mp4')
+        with open(final, 'wb') as handle:
+            handle.write(bytes(10))
+        with open(final + '.part', 'wb') as handle:
+            handle.write(b'old')
+        result, _ = self.run_one(name='movie.mp4', size=10)
+        self.assertEqual(result, 'ok')
+        self.assertFalse(os.path.exists(final + '.part'))
+        self.assertEqual(self.downloads, [])
+
+    def test_missing_file_record_discards_only_current_file_fragments(self):
+        folder = os.path.join(self.lib, 'Series')
+        os.makedirs(folder)
+        partial = os.path.join(folder, 'movie.mp4.part')
+        other = os.path.join(folder, 'other.mp4.part')
+        with open(partial, 'wb') as handle:
+            handle.write(b'old')
+        with open(other, 'wb') as handle:
+            handle.write(b'leave')
+        segments = partial + '.segs4'
+        os.makedirs(segments)
+        with open(os.path.join(segments, '000'), 'wb') as handle:
+            handle.write(b'old')
+        resumes = []
+
+        def stream(url, target, expected=0, resume=0, *args, **kwargs):
+            resumes.append(resume)
+            with open(target, 'wb') as handle:
+                handle.write(bytes(expected))
+            return expected
+
+        self.fake_stream = stream
+        result, _ = self.run_one(name='movie.mp4', size=10)
+        self.assertEqual(result, 'ok')
+        self.assertEqual(resumes, [0])
+        self.assertFalse(os.path.exists(segments))
+        self.assertTrue(os.path.exists(other))
+
+    def test_file_record_keeps_partial_for_resume(self):
+        from pikpakget.pipeline import job_key
+        folder = os.path.join(self.lib, 'Series')
+        os.makedirs(folder)
+        final = os.path.join(folder, 'movie.mp4')
+        with open(final + '.part', 'wb') as handle:
+            handle.write(b'12345')
+        job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111',
+               'folder': 'Series'}
+        self.pipeline.state.file('SHAREFILE1', job_key(job)).update(
+            {'state': 'pending', 'local': final, 'home': final})
+        resumes = []
+
+        def stream(url, target, expected=0, resume=0, *args, **kwargs):
+            resumes.append(resume)
+            with open(target, 'ab') as handle:
+                handle.write(bytes(expected - resume))
+            return expected
+
+        self.fake_stream = stream
+        result, _ = self.run_one(name='movie.mp4', size=10)
+        self.assertEqual(result, 'ok')
+        self.assertEqual(resumes, [5])
 
 
 class TestTruncationIsVisible(RunLinkHarness):

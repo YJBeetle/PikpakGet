@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Discard a file's `.part` and segment fragments before downloading when no matching file progress record exists. Other fragments remain untouched.
+
 - Store progress, logs and locks under each series directory, with relative local paths. The old root journal is no longer read or migrated.
 - Adopt existing local files by relative path and exact size. `--verify` additionally checks available content hashes during downloads; `--verify --dry-run` performs a read-only audit. Removed the old standalone `--verify` mode.
 

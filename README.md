@@ -94,6 +94,8 @@ Rerun the same command to continue unfinished files. Completed shares are listed
 
 Downloads go to a `.part` file first. When complete, the tool tries to verify them against the share's content hash. The hash's block format is inferred from samples; failure to match a known block size does not prove that the bytes are corrupt. After retries are exhausted, the bytes are kept as `.unverified` and are not treated as verified.
 
+The `.part` file and any segment fragments sit beside the destination file. A matching file progress record allows a later run to resume them. If `.pikpakget` is lost, or a file has no progress record, the tool deletes that file's fragments when it reaches the file and downloads it from the beginning. It does not scan or clear fragments belonging to other files.
+
 On a new scan, an existing file is accepted by its relative path and exact size without another download, including when the series journal was lost. This fast check can accept different bytes of the same length. Add `--verify` to check existing files against the share's content hash; a mismatch preserves the old file under a conflict name and downloads a new copy. When the share supplies no hash, the tool warns and falls back to path and size. `--verify --dry-run` scans and reports missing files, wrong sizes, and hash mismatches without downloading, renaming, or cloud cleanup. Newly downloaded files still receive their usual hash check. The previous standalone `--verify` audit mode has been removed.
 
 The old `DIR/.pikpakget/` journal is not read or migrated. Move existing downloads into their series folders yourself; a later run will recognize them using the rules above.
