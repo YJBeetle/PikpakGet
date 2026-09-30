@@ -601,16 +601,21 @@ class Pipeline:
         first and state records two finished files where one exists. Probed once,
         because a rename probe costs a filesystem round trip we do not want per file."""
         if self._case_folded is None:
-            probe = 'pikpakget-case-probe.XX'
+            probe = None
             try:
                 os.makedirs(self.args.dest, exist_ok=True)
-                with open(os.path.join(self.args.dest, probe), 'wb'):
-                    pass
-                self._case_folded = os.path.exists(os.path.join(self.args.dest,
-                                                                probe.casefold()))
-                os.remove(os.path.join(self.args.dest, probe))
+                descriptor, probe = tempfile.mkstemp(prefix='.pikpakget-case-',
+                                                      suffix='Aa', dir=self.args.dest)
+                os.close(descriptor)
+                self._case_folded = os.path.exists(probe[:-2] + 'aA')
             except OSError:
                 self._case_folded = False      # cannot tell: assume the strict case
+            finally:
+                if probe:
+                    try:
+                        os.remove(probe)
+                    except FileNotFoundError:
+                        pass
         return self._case_folded
 
     def fetch_to(self, file_id, node, dest_dir, record=None):
