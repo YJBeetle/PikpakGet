@@ -9,6 +9,66 @@ from pikpakget.pipeline import Log
 
 
 class TestAccountRotation(unittest.TestCase):
+    def test_different_series_have_independent_locks(self):
+        root = tempfile.mkdtemp()
+        args = cli.build_parser().parse_args(['--dest', root])
+        cli.resolve_dirs(args)
+        first = cli.series_args(args, 'A')
+        second = cli.series_args(args, 'B')
+        a = cli._acquire_lock(first.state_dir)
+        b = cli._acquire_lock(second.state_dir)
+        self.assertIsNotNone(a)
+        self.assertIsNotNone(b)
+        try:
+            self.assertIsNone(cli._acquire_lock(first.state_dir))
+            self.assertFalse(os.path.exists(os.path.join(root, '.pikpakget')))
+        finally:
+            a.close()
+            b.close()
+
+    def test_multi_series_jobs_get_separate_journals(self):
+        root = tempfile.mkdtemp()
+        links = os.path.join(root, 'links.txt')
+        with open(links, 'w', encoding='utf-8') as handle:
+            handle.write('https://mypikpak.com/s/EXAMPLEID1111111111\tA\n')
+            handle.write('https://mypikpak.com/s/EXAMPLEID2222222222\tB\n')
+        args = cli.build_parser().parse_args([links, '--dest', os.path.join(root, 'dest'),
+                                              '--log', '-'])
+        cli.resolve_dirs(args)
+        seen = []
+
+        class Lock:
+            def close(self):
+                pass
+
+        class Registry:
+            def __init__(self, home):
+                self.items = [{'id': 'one', 'label': 'one'}]
+
+            def choose(self, excluded=(), only=None, respect_cooldown=False):
+                return self.items[0], Lock()
+
+            def client(self, item, logger=None):
+                return type('Client', (), {'prepare_workspace': lambda self: 'pack'})()
+
+        class Pipeline:
+            def __init__(self, args, log, **kwargs):
+                self.args = args
+                self.files_done = 0
+
+            def run(self, jobs):
+                seen.append((self.args.state_dir, [job['folder'] for job in jobs]))
+                return 0
+
+        with mock.patch.object(cli, 'Accounts', Registry), \
+                mock.patch.object(cli, 'Pipeline', Pipeline), \
+                mock.patch.object(cli, '_acquire_lock', return_value=Lock()), \
+                mock.patch.object(cli, '_install_stop_handler'):
+            self.assertEqual(cli._commands(args, Log(quiet=True)), 0)
+        self.assertEqual(seen, [
+            (os.path.join(args.dest, 'A', '.pikpakget'), ['A']),
+            (os.path.join(args.dest, 'B', '.pikpakget'), ['B'])])
+
     def test_cloud_cleanup_defaults_to_no(self):
         items = [{'id': 'old', 'name': 'old.mp4'}]
         with mock.patch.object(cli.sys.stdin, 'isatty', return_value=True), \

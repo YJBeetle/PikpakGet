@@ -1,5 +1,6 @@
 """Command line entry point."""
 import argparse
+import copy
 import getpass
 import json
 import math
@@ -25,7 +26,7 @@ STOP = False
 def _confirm_cloud_cleanup(items, owned_ids, label, log):
     log(f'账号 {label} 的 Pack From Shared 中有 {len(items)} 项可清理：', 'warn')
     for item in items[:10]:
-        owner = '本库记录' if item['id'] in owned_ids else '归属未知'
+        owner = '本系列记录' if item['id'] in owned_ids else '归属未知'
         log(f'  {item.get("name") or "(无名称)"} ({owner}，ID: {item["id"]})', 'warn')
     if len(items) > 10:
         log(f'  另有 {len(items) - 10} 项未列出', 'warn')
@@ -93,20 +94,23 @@ def remembered_dest():
     return read_config().get('dest') or default_dest()
 
 
-def state_dir_for(dest, remembered):
-    """Every library owns its journal and lock, including the remembered library."""
-    return os.path.join(os.path.abspath(dest), DOT_DIR_NAME)
+def series_args(args, folder):
+    selected = copy.copy(args)
+    selected.series_root = os.path.join(args.dest, folder)
+    selected.state_dir = os.path.join(selected.series_root, DOT_DIR_NAME)
+    return selected
 
 
 def resolve_dirs(args):
-    """Fix the three anchors once: dest, the journal beside it, and the account folder.
+    """Fix the download root and account folder once.
 
     `read_config` warns as it goes, so it is called once here rather than per derived
     value: a broken config file would otherwise say so two or three times."""
     remembered = remembered_dest()
     args.dest = os.path.abspath(os.path.expanduser(args.dest or remembered))
     args.account_dir = account_dir()
-    args.state_dir = state_dir_for(args.dest, remembered)
+    args.state_dir = None
+    args.series_root = None
 
 
 def write_config(pairs):
@@ -158,7 +162,7 @@ def write_config(pairs):
     os.replace(tmp, path)
     print(f'已写入 {path}：'
           + (f'dest={stored["dest"]}' if stored else '已清空，回到 ~/Downloads/PikPak'))
-    print(f'不带 --dest 就跑这个库，进度记在 {os.path.join(stored.get("dest", default_dest()), DOT_DIR_NAME)}')
+    print('不带 --dest 就用这个下载根目录；每个分组的进度保存在分组内的 .pikpakget/')
     return 0
 
 
@@ -213,18 +217,17 @@ def build_parser():
                         help='size up each link (file count, bytes, largest file) without '
                              'using any cloud space')
     parser.add_argument('--inventory-out', default='inventory.csv')
-    parser.add_argument('--verify', dest='verify_only', action='store_true',
-                        help='re-check every file already marked downloaded against the '
-                             'content hash the share reports; deletes nothing, exits 1 on '
-                             'a mismatch')
+    parser.add_argument('--verify', action='store_true',
+                        help='hash-check existing files during download; with --dry-run, '
+                             'only scan and report, without downloading or changing files')
     parser.add_argument('--dry-run', action='store_true',
                         help='plan only; no restore, download or cloud cleanup')
     parser.add_argument('--no-delete', action='store_true',
                         help='keep the cloud copies after downloading (fills the quota fast)')
     parser.add_argument('--yes', action='store_true', help='ignore unparsable link lines')
-    parser.add_argument('--log', default='auto', help="write a log file into the progress "
-                                                     "directory (default), or '-' to log "
-                                                     "to stdout only")
+    parser.add_argument('--log', default='auto', help="write a log file into each series' "
+                                                     "progress directory (default), or '-' "
+                                                     "to log to stdout only")
     parser.add_argument('--version', action='store_true', help='print version and exit')
     parser.add_argument('--quiet', action='store_true')
     return parser
@@ -232,6 +235,8 @@ def build_parser():
 
 def _acquire_lock(state_dir):
     os.makedirs(state_dir, mode=0o700, exist_ok=True)
+    if os.path.islink(state_dir):
+        raise PikPakError(f'进度目录不能是符号链接：{state_dir}')
     descriptor = os.open(os.path.join(state_dir, 'lock'), os.O_RDWR | os.O_CREAT, 0o600)
     os.fchmod(descriptor, 0o600)
     handle = os.fdopen(descriptor, 'r+')
@@ -245,6 +250,25 @@ def _acquire_lock(state_dir):
     handle.write(str(os.getpid()))
     handle.flush()
     return handle
+
+
+def _show_status(args, log):
+    if not os.path.isdir(args.dest):
+        print(f'{args.dest} 下没有任何进度记录')
+        return 0
+    roots = []
+    for name in sorted(os.listdir(args.dest)):
+        root = os.path.join(args.dest, name)
+        if (os.path.isdir(root) and not os.path.islink(root)
+                and os.path.isfile(os.path.join(root, DOT_DIR_NAME, 'state.json'))):
+            roots.append(name)
+    if not roots:
+        print(f'{args.dest} 下没有任何进度记录')
+        return 0
+    for name in roots:
+        print(f'系列：{name}')
+        Pipeline(series_args(args, name), log).status()
+    return 0
 
 
 def main(argv=None):
@@ -261,22 +285,7 @@ def main(argv=None):
         print('单实例锁依赖 POSIX 的 fcntl，Windows 上不支持：请在 WSL 或 Linux/macOS 里运行',
               file=sys.stderr)
         return 2
-    readonly = (args.doctor or args.status_only or args.whoami or args.accounts
-                or args.login is not None or args.logout or args.dry_run or args.inventory_only)
-    if not readonly:
-        try:
-            os.makedirs(args.state_dir, mode=0o700, exist_ok=True)
-        except OSError as error:
-            print(f'进度目录不可用：{args.state_dir}（{error}）', file=sys.stderr)
-            return 2
-    # an unattended run outlives the terminal, so the same lines that scroll past
-    # are kept on disk (stdout stays the primary output)
-    log = (Log(quiet=args.quiet) if readonly or args.log == '-'
-           else Log(os.path.join(args.state_dir, f'grab-{time.strftime("%Y-%m-%d")}.log'),
-                    args.quiet))
-    # the log is opened here, so it has to be closed here: every early return used to
-    # leave the handle to the garbage collector, which shows up as an unclosed-file
-    # warning at exit and keeps the file locked on Windows
+    log = Log(quiet=args.quiet)
     try:
         return _commands(args, log)
     finally:
@@ -286,7 +295,7 @@ def main(argv=None):
 def _commands(args, log):
     try:
         if args.status_only:
-            return Pipeline(args, log).status()
+            return _show_status(args, log)
         registry = Accounts(args.account_dir)
         if args.doctor and not registry.items:
             client = Client(session_path=None, logger=log)
@@ -335,103 +344,136 @@ def _commands(args, log):
                 raise PikPakError('链接文件里没有可用链接')
         elif not (args.doctor or args.status_only or args.whoami):
             build_parser().error('a links file is required (or use --login/--whoami/--status)')
-        writable_job = jobs is not None and not (args.dry_run or args.inventory_only)
-        library_lock = _acquire_lock(args.state_dir) if writable_job else None
-        if writable_job and library_lock is None:
-            print(f'本地库正在被另一个进程使用：{args.state_dir}/lock')
-            return 3
-        try:
-            if jobs:
-                _install_stop_handler()
-            excluded = set()
-            remaining_files = args.max_files
-            actual_download = bool(jobs and not (args.verify_only or args.dry_run
-                                                 or args.inventory_only))
-            while True:
-                if STOP:
-                    log('已中断账号选择；进度已保存', 'warn')
-                    return 1
-                item, account_lock = registry.choose(
-                    excluded, only=args.account, respect_cooldown=actual_download)
-                if account_lock is None:
-                    if not registry.items:
-                        raise PikPakError('没有已登录账号；先运行 --login')
-                    candidates = [entry for entry in registry.items
-                                  if entry['id'] not in excluded and
-                                  (not args.account or entry['id'] == registry.find(args.account)['id'])]
-                    if not candidates:
-                        log('所有候选账号均初始化失败', 'error')
-                        return 1
-                    if actual_download:
-                        now = time.time()
-                        cooling = [(registry.traffic_retry_at(entry), entry)
-                                   for entry in candidates]
-                        cooling = [(deadline, entry) for deadline, entry in cooling
-                                   if deadline > now]
-                        if cooling:
-                            deadline, next_item = min(cooling, key=lambda pair: pair[0])
-                            log(f'暂无可下载账号；账号 {next_item["label"]} '
-                                f'约 {math.ceil((deadline - now) / 60)} 分钟后重试'
-                                f'（{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(deadline))}）',
-                                'warn')
-                            if not _wait_for_traffic_retry(deadline):
-                                log('等待账号流量恢复时已中断；进度已保存', 'warn')
-                                return 1
-                            continue
-                    print('没有可用账号：所有账号都被其他进程锁定')
-                    return 3
-                try:
-                    client = registry.client(item, logger=log)
-                    if actual_download:
-                        try:
-                            workspace_id = client.prepare_workspace()
-                        except PikPakError as error:
-                            log(f'账号 {item["label"]} 的网盘临时文件夹无法清理：{error}', 'error')
-                            excluded.add(item['id'])
-                            continue
-                    else:
-                        workspace_id = None
-                    if remaining_files:
-                        args.max_files = remaining_files
-                    pipeline = Pipeline(args, log, stop=lambda: STOP, client=client,
-                                        account_id=item['id'], workspace_id=workspace_id,
-                                        account_label=item['label'],
-                                        confirm_cleanup=lambda items, owned: _confirm_cloud_cleanup(
-                                            items, owned, item['label'], log))
-                    if args.doctor:
-                        return pipeline.doctor()
-                    if args.whoami:
-                        about = client.about()
-                        space = client.space()
-                        expires = str(about.get('expires_at') or '').strip()
-                        print(f'账号   {item["label"]}')
-                        print(f'云盘   {human(space["usage"])} / {human(space["limit"])}')
-                        print(f'订阅   {expires.split("T")[0] + " 到期" if expires else "无到期时间"}')
-                        return 0
-                    if args.verify_only:
-                        return pipeline.verify(jobs)
-                    code = pipeline.run(jobs)
-                    if code == 4:
-                        registry.mark_traffic_capped(item)
-                        if remaining_files:
-                            remaining_files -= pipeline.files_done
-                            if remaining_files <= 0:
-                                return 1
-                        log(f'账号 {item["label"]} 下行流量已满，1 小时后再试；'
-                            '现在尝试下一个账号', 'warn')
-                        continue
-                    return code
-                finally:
-                    account_lock.close()
-        finally:
-            if library_lock:
-                library_lock.close()
+        if jobs:
+            _install_stop_handler()
+            jobs = jobs[:args.limit or len(jobs)]
+        grouped = {}
+        if jobs and not args.inventory_only and (not args.dry_run or args.verify):
+            for job in jobs:
+                grouped.setdefault(job['folder'], []).append(job)
+        else:
+            grouped[None] = jobs
+        remaining_files = args.max_files
+        result = 0
+        for folder, group in grouped.items():
+            selected = series_args(args, folder) if folder else copy.copy(args)
+            selected.limit = 0
+            if args.max_files:
+                selected.max_files = remaining_files
+            writable = bool(group and not (args.dry_run or args.inventory_only))
+            lock = None
+            series_log = log
+            if writable:
+                if os.path.lexists(selected.series_root) and (
+                        os.path.islink(selected.series_root)
+                        or not os.path.isdir(selected.series_root)):
+                    raise PikPakError(f'系列目录不是普通文件夹：{selected.series_root}')
+                lock = _acquire_lock(selected.state_dir)
+                if lock is None:
+                    log(f'系列正在被另一个进程使用：{selected.state_dir}/lock', 'warn')
+                    result = 3
+                    continue
+                if args.log != '-':
+                    series_log = Log(os.path.join(selected.state_dir,
+                                     f'grab-{time.strftime("%Y-%m-%d")}.log'), args.quiet)
+            try:
+                code, done = _run_group(selected, series_log, registry, group)
+            finally:
+                if series_log is not log:
+                    series_log.close()
+                if lock:
+                    lock.close()
+            if args.max_files:
+                remaining_files -= done
+            if code:
+                result = code
+            if STOP or (args.max_files and remaining_files <= 0):
+                break
+        return result
     except PikPakError as error:
         print(f'错误：{error}', file=sys.stderr)
         return 2
     except OSError as error:
         print(f'本地文件操作失败：{error}', file=sys.stderr)
         return 2
+
+
+def _run_group(args, log, registry, jobs):
+    excluded = set()
+    completed = 0
+    file_budget = args.max_files
+    actual_download = bool(jobs and not (args.dry_run or args.inventory_only))
+    while True:
+        if STOP:
+            log('已中断账号选择；进度已保存', 'warn')
+            return 1, completed
+        item, account_lock = registry.choose(
+            excluded, only=args.account, respect_cooldown=actual_download)
+        if account_lock is None:
+            if not registry.items:
+                raise PikPakError('没有已登录账号；先运行 --login')
+            candidates = [entry for entry in registry.items
+                          if entry['id'] not in excluded and
+                          (not args.account or entry['id'] == registry.find(args.account)['id'])]
+            if not candidates:
+                log('所有候选账号均初始化失败', 'error')
+                return 1, completed
+            if actual_download:
+                now = time.time()
+                cooling = [(registry.traffic_retry_at(entry), entry) for entry in candidates]
+                cooling = [(deadline, entry) for deadline, entry in cooling if deadline > now]
+                if cooling:
+                    deadline, next_item = min(cooling, key=lambda pair: pair[0])
+                    log(f'暂无可下载账号；账号 {next_item["label"]} '
+                        f'约 {math.ceil((deadline - now) / 60)} 分钟后重试'
+                        f'（{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(deadline))}）',
+                        'warn')
+                    if not _wait_for_traffic_retry(deadline):
+                        log('等待账号流量恢复时已中断；进度已保存', 'warn')
+                        return 1, completed
+                    continue
+            print('没有可用账号：所有账号都被其他进程锁定')
+            return 3, completed
+        try:
+            client = registry.client(item, logger=log)
+            if actual_download:
+                try:
+                    workspace_id = client.prepare_workspace()
+                except PikPakError as error:
+                    log(f'账号 {item["label"]} 的网盘临时文件夹无法清理：{error}', 'error')
+                    excluded.add(item['id'])
+                    continue
+            else:
+                workspace_id = None
+            if file_budget:
+                args.max_files = file_budget - completed
+            pipeline = Pipeline(args, log, stop=lambda: STOP, client=client,
+                                account_id=item['id'], workspace_id=workspace_id,
+                                account_label=item['label'],
+                                confirm_cleanup=lambda items, owned: _confirm_cloud_cleanup(
+                                    items, owned, item['label'], log))
+            if args.doctor:
+                return pipeline.doctor(), completed
+            if args.whoami:
+                about = client.about()
+                space = client.space()
+                expires = str(about.get('expires_at') or '').strip()
+                print(f'账号   {item["label"]}')
+                print(f'云盘   {human(space["usage"])} / {human(space["limit"])}')
+                print(f'订阅   {expires.split("T")[0] + " 到期" if expires else "无到期时间"}')
+                return 0, completed
+            code = pipeline.run(jobs)
+            completed += pipeline.files_done
+            if code == 4:
+                registry.mark_traffic_capped(item)
+                if file_budget and completed >= file_budget:
+                    return 1, completed
+                log(f'账号 {item["label"]} 下行流量已满，1 小时后再试；'
+                    '现在尝试下一个账号', 'warn')
+                continue
+            return code, completed
+        finally:
+            account_lock.close()
 
 
 if __name__ == '__main__':

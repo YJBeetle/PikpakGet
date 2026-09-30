@@ -34,7 +34,8 @@ QUARANTINE_SUFFIX = '.unverified'     # bytes we keep but cannot vouch for
 THROTTLE_STOP = 3                     # consecutive refusals before giving up
 AUTH_STOP = 3                         # ... and consecutive 401/403s before blaming the session
 
-STATE_VERSION = 3
+STATE_VERSION = 4
+LOCAL_PATH_FIELDS = ('local', 'home', 'quarantined')
 
 
 def job_key(job):
@@ -109,7 +110,7 @@ def safe_name(name, limit=200):
     # mangled filenames for protection nobody needed
     if text in ('.', '..'):
         text = '_' + text
-    # a library keeps its journal in <dest>/.pikpakget, so a share folder or file that
+    # a series keeps its journal in <dest>/<series>/.pikpakget, so a share folder or file that
     # arrives with exactly that name would otherwise be written into (or over) it
     if text == DOT_DIR_NAME:
         text = '_' + text
@@ -213,14 +214,17 @@ class State:
     """`state.json` holds the plan and per-file progress. Written atomically, and
     a file that cannot be parsed is moved aside rather than silently ignored."""
 
-    def __init__(self, path):
+    def __init__(self, path, root=None, read_only=False):
         self.path = path
+        self.root = os.path.abspath(root) if root else None
         self.data = {'version': STATE_VERSION, 'updated': None, 'links': {}, 'files': {}}
-        if os.path.exists(path):
+        if path and os.path.exists(path):
             try:
                 with open(path, encoding='utf-8') as handle:
                     loaded = json.load(handle)
             except (ValueError, OSError) as error:
+                if read_only:
+                    raise PikPakError(f'状态文件读不了：{path}（{error}）') from error
                 backup = f'{path}.corrupt-{time.strftime("%Y%m%d-%H%M%S")}'
                 descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                 with open(path, 'rb') as source, os.fdopen(descriptor, 'wb') as target:
@@ -234,7 +238,29 @@ class State:
                     raise PikPakError(f'状态版本不受支持：{path}；请自行移走旧文件后重跑')
                 if not isinstance(loaded.get('links'), dict) or not isinstance(loaded.get('files'), dict):
                     raise PikPakError(f'状态结构不完整：{path}；请先检查文件')
+                if self.root:
+                    for record in loaded['files'].values():
+                        for field in LOCAL_PATH_FIELDS:
+                            record[field] = self._absolute(record.get(field))
                 self.data = loaded
+
+    def _absolute(self, value):
+        if value is None:
+            return None
+        if not isinstance(value, str) or os.path.isabs(value):
+            raise PikPakError(f'进度文件包含非相对路径：{self.path}')
+        path = os.path.abspath(os.path.join(self.root, value))
+        if os.path.commonpath((self.root, path)) != self.root:
+            raise PikPakError(f'进度文件路径超出系列目录：{self.path}')
+        return path
+
+    def _relative(self, value):
+        if value is None:
+            return None
+        path = os.path.abspath(value)
+        if os.path.commonpath((self.root, path)) != self.root:
+            raise PikPakError(f'本地文件路径超出系列目录：{path}')
+        return os.path.relpath(path, self.root)
 
     def link(self, url):
         return self.data['links'].setdefault(url, {'status': 'pending', 'attempts': 0})
@@ -271,13 +297,24 @@ class State:
                 info['attempts'] = 0
 
     def save(self):
+        if self.path is None:
+            return
         directory = os.path.dirname(self.path) or '.'
         os.makedirs(directory, mode=0o700, exist_ok=True)
         self.data['updated'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        serialised = self.data
+        if self.root:
+            serialised = dict(self.data)
+            serialised['files'] = {}
+            for key, record in self.data['files'].items():
+                copy = dict(record)
+                for field in LOCAL_PATH_FIELDS:
+                    copy[field] = self._relative(copy.get(field))
+                serialised['files'][key] = copy
         descriptor, tmp = tempfile.mkstemp(prefix='.state-', dir=directory)
         try:
             with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
-                json.dump(self.data, handle, ensure_ascii=False, indent=1)
+                json.dump(serialised, handle, ensure_ascii=False, indent=1)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp, self.path)
@@ -306,7 +343,12 @@ class Pipeline:
         self.workspace_id = workspace_id
         self.confirm_cleanup = confirm_cleanup
         self.traffic_capped = False
-        self.state = State(os.path.join(args.state_dir, 'state.json'))
+        self.state = State(os.path.join(args.state_dir, 'state.json')
+                           if getattr(args, 'state_dir', None) else None,
+                           root=getattr(args, 'series_root', None),
+                           read_only=getattr(args, 'dry_run', False)
+                           or getattr(args, 'status_only', False)
+                           or getattr(args, 'doctor', False))
         self.created = set()          # drive ids we made: the only ones we may delete
         for rec in self.state.data['files'].values():
             if (rec.get('restored_id') and rec.get('state') not in ('done', 'too_big')
@@ -582,17 +624,20 @@ class Pipeline:
         # isfile, not exists: a stray directory at that path is not a finished file
         if os.path.isfile(final):
             local = os.path.getsize(final)
-            if expected and local == expected:
-                if node.get('hash') and verify_content(final, node['hash'],
-                                                       self.hash_sizes(record)):
-                    self.log(f'已存在且内容 hash 一致，跳过 {node["name"][:40]}')
-                    return final, 'existing'
+            if local == expected and self.existing_matches(final, node, record):
+                return final, 'existing'
             owned = (record is not None and record.get('local') == final
-                     and record.get('state') in ('downloaded', 'done'))
+                     and record.get('state') in ('downloaded', 'done')
+                     and not getattr(self.args, 'verify', False))
             if not owned:
                 # anything else sitting in the library belongs to the user: a share
                 # reusing that filename is not licence to delete it
-                clash = f'{final}.conflict-{time.strftime("%Y%m%d-%H%M%S")}'
+                base = f'{final}.conflict-{time.strftime("%Y%m%d-%H%M%S")}'
+                clash = base
+                suffix = 2
+                while os.path.lexists(clash):
+                    clash = f'{base}-{suffix}'
+                    suffix += 1
                 os.rename(final, clash)
                 self.log(f'目标同名文件不是本工具下的，改名让路 '
                          f'{os.path.basename(clash)[:40]}', 'warn')
@@ -638,63 +683,24 @@ class Pipeline:
             raise PikPakError(f'下载不完整 {written}/{expected}')
         return self.promote(part, final, node, record)
 
-    def verify(self, jobs):
-        """Re-check every file the state claims to have downloaded, using the hash the
-        share still reports, and quarantine the ones that fail.
-
-        Quarantining is what makes "re-run the download command" the actual fix: the
-        suspect bytes are renamed to `<name>.unverified` — kept as evidence, and
-        because 500 MiB is not free to fetch twice — and the record goes back to
-        `pending`, so the next pass writes a fresh copy under the original name. A
-        file that was quarantined and now hashes out is moved back into place."""
-        checked, suspect, absent, unknown, skipped = 0, [], [], 0, 0
-        for job in jobs:
-            try:
-                report = self.inventory(job)
-            except PikPakError as error:
-                # one dead share must not stop the sweep over everything else
-                skipped += 1
-                self.log(f'{job["folder"]}: 读不到清单，这个链接暂时没法复核: {error}', 'warn')
-                continue
-            for node in report['files']:
-                record = self.state.data['files'].get(file_key(job.get('key') or job_key(job),
-                                                               node['id']))
-                if not record or record.get('state') not in ('done', 'unverified'):
-                    continue
-                local = record.get('local')
-                if not local or not os.path.exists(local):
-                    absent.append(node['name'])
-                    continue
-                if not node['hash']:
-                    unknown += 1
-                    continue
-                piece = None
-                if size_on_disk(local) == node['size']:
-                    piece = verify_content(local, node['hash'], self.hash_sizes(record))
-                if piece is None:
-                    self.quarantine(local, f"云端 {node['hash'][:16]}… 无候选分片命中", record)
-                    # running --verify *is* the ask to fix it: the record goes back into
-                    # the queue under its real name, while `quarantined` keeps the old
-                    # bytes reachable until a good copy replaces them
-                    record.update({'state': 'pending', 'local': record['home'], 'attempts': 0})
-                    suspect.append(node['name'])
-                    continue
-                record.update({'hash_piece': piece, 'state': 'done', 'error': None})
-                if record.get('quarantined') == local:
-                    home = record['home']
-                    os.replace(local, home)
-                    record['local'] = home
-                    record['quarantined'] = None
-                    self.log(f'  隔离的文件复核通过，放回 {os.path.basename(home)[:52]}')
-                checked += 1
-        self.state.save()
-        self.log(f'校验完成：{checked} 个内容 hash 相符，{len(suspect)} 个已隔离并退回重下，'
-                 f'{len(absent)} 个本地不在，{unknown} 个云端没给 hash，'
-                 f'{skipped} 个链接读不到清单')
-        for name in absent:
-            self.log(f'  本地没有：{name[:60]}', 'warn')
-        return 1 if suspect else 0
-
+    def existing_matches(self, path, node, record=None):
+        """Adopt by path and size; --verify also checks a reported content hash."""
+        if os.path.islink(path) or size_on_disk(path) != node['size']:
+            return False
+        if not getattr(self.args, 'verify', False):
+            return True
+        expected = node.get('hash')
+        if not expected:
+            self.log(f'云端未提供 hash，按路径和大小确认：{node["path"][:70]}', 'warn')
+            return True
+        piece = verify_content(path, expected, self.hash_sizes(record))
+        if piece is None:
+            self.log(f'已有文件内容 hash 不符：{node["path"][:70]}', 'warn')
+            return False
+        if record is not None:
+            record['hash_piece'] = piece
+        self.log(f'已有文件内容 hash 已核对：{node["path"][:70]}')
+        return True
 
     def hash_sizes(self, record=None):
         """Remembered block sizes first. One share is usually one client with one
@@ -877,24 +883,29 @@ class Pipeline:
             record['source_hash'] = node.get('hash')
             record.update({'name': node['name'], 'size': node['size'], 'path': node['path'],
                            'local': record.get('local') or planned_local})
-            if record['state'] == 'done' and size_on_disk(record.get('local')) == node['size']:
-                continue
             if record['state'] == 'unverified':
                 if size_on_disk(record.get('local')):
                     # an hour of quota is not worth re-litigating an unproven rule on
                     # every pass, so the quarantined copy stays put until a human
-                    # deletes it or --verify gets a different answer
+                    # deletes it
                     continue
                 # the quarantine was deleted: that is the ask to fetch it again
                 record['state'] = 'pending'
                 record['attempts'] = 0
                 record['local'] = record.get('home') or record.get('local')
-            if record['state'] == 'downloaded' and size_on_disk(record.get('local')) == node['size']:
+            if self.existing_matches(planned_local, node, record):
+                if record['state'] == 'done':
+                    continue
                 self.forget([record.get('restored_id')], node['size'])
+                record['local'] = planned_local
+                record['home'] = planned_local
                 record['state'] = 'done'
+                record['error'] = None
                 self.state.save()
-                self.log(f'补做云端清理: {node["name"][:44]}')
+                self.log(f'已识别本地文件，跳过下载：{node["path"][:70]}')
                 continue
+            if record['state'] in ('done', 'downloaded'):
+                record['state'] = 'pending'
             if self.quota_limit and node['size'] > self.quota_limit - SPACE_HEADROOM:
                 # restoring this would fail half-way and leave the drive full
                 record.update({'state': 'too_big',
@@ -1026,6 +1037,8 @@ class Pipeline:
 
     def run(self, jobs):
         if self.args.dry_run:
+            if getattr(self.args, 'verify', False):
+                return self.audit_existing(jobs[:self.args.limit or len(jobs)])
             for job in jobs[:self.args.limit or len(jobs)]:
                 report = self.inventory(job)
                 self.log(f'{job["folder"]}: 计划 {len(report["files"])} 个文件 / '
@@ -1091,6 +1104,46 @@ class Pipeline:
             self.log(f'{len(unfinished)} 个链接未完成，进入下一轮补齐')
         self.log('仍有链接未完成；重跑同一命令即可从断点继续', 'warn')
         return 1
+
+    def audit_existing(self, jobs):
+        """Read-only check of local files against the current share listing."""
+        # Path planning normally probes the volume by creating a temporary file.
+        # An audit must be read-only; casefolded matching is the conservative choice.
+        self._case_folded = True
+        checked = missing = wrong = no_hash = failed = 0
+        for job in jobs:
+            try:
+                report = self.inventory(job)
+                folders = self.local_folder_paths(report,
+                                                  os.path.join(self.args.dest, job['folder']))
+            except PikPakError as error:
+                failed += 1
+                self.log(f'{job["folder"]}: 清单读取失败：{error}', 'error')
+                continue
+            for node in report['files']:
+                parent = folders.get(node.get('parent_id') or '')
+                if parent is None:
+                    failed += 1
+                    self.log(f'文件缺少父目录：{node["path"]}', 'error')
+                    continue
+                path = self.dest_path(node, parent)
+                if os.path.islink(path) or size_on_disk(path) is None:
+                    missing += 1
+                    self.log(f'本地缺失：{node["path"]}', 'warn')
+                elif size_on_disk(path) != node['size']:
+                    wrong += 1
+                    self.log(f'大小不符：{node["path"]}', 'warn')
+                elif not node.get('hash'):
+                    no_hash += 1
+                    self.log(f'云端无 hash，仅大小相符：{node["path"]}', 'warn')
+                elif verify_content(path, node['hash'], self.hash_sizes()) is None:
+                    wrong += 1
+                    self.log(f'内容 hash 不符：{node["path"]}', 'warn')
+                else:
+                    checked += 1
+        self.log(f'只读复核：{checked} 个 hash 相符，{missing} 个缺失，'
+                 f'{wrong} 个不符，{no_hash} 个云端无 hash，{failed} 个无法检查')
+        return 1 if missing or wrong or failed else 0
 
     def report(self, jobs):
         rows = []
@@ -1168,10 +1221,9 @@ class Pipeline:
         else:
             check('curl', 'ok' if curl else 'note',
                   '单流用 urllib，不需要 curl' if not curl else curl)
-        # The library holds bytes and progress; the account directory holds sessions.
+        # Each series holds its own progress; the account directory holds sessions.
         wanted, by_path = [], {}
         for label, path, needs_space in (('库目录', self.args.dest, True),
-                                         ('进度目录', self.args.state_dir, False),
                                          ('账号目录', self.account_dir, False)):
             key = os.path.abspath(path)
             if key in by_path:
@@ -1198,26 +1250,31 @@ class Pipeline:
                 free = shutil.disk_usage(path).free
                 check('剩余空间', 'ok' if free >= LOCAL_HEADROOM else 'FAIL',
                       f'{human(free)} 可用，{label}所在卷至少需要 {human(LOCAL_HEADROOM)}')
-        records = self.state.data['files']
-        done = [rec for rec in records.values() if rec.get('state') == 'done']
-        check('已有进度', 'ok', f'{len(done)} 个完成记录 / {len(records)} 条')
+        series = []
+        if os.path.isdir(self.args.dest):
+            for name in os.listdir(self.args.dest):
+                root = os.path.join(self.args.dest, name)
+                state_path = os.path.join(root, DOT_DIR_NAME, 'state.json')
+                if os.path.isdir(root) and not os.path.islink(root) and os.path.isfile(state_path):
+                    series.append((root, State(state_path, root=root, read_only=True)))
+        records = [rec for _, state in series for rec in state.data['files'].values()]
+        done = [rec for rec in records if rec.get('state') == 'done']
+        check('已有进度', 'ok', f'{len(series)} 个系列，{len(done)} 个完成记录 / {len(records)} 条')
         if self.case_insensitive():
             check('目的卷', 'note', '大小写不敏感：重名的不同大小写会改名让路（已按此处理）')
         if fcntl:
-            try:
-                handle = open(os.path.join(self.args.state_dir, 'lock'), 'a')
-            except OSError as error:
-                check('并发实例', 'warn', f'锁文件打不开：{error}')
-            else:
-                # append mode on purpose: 'w' would truncate the pid another instance
-                # wrote there and make its own status line lie
-                with handle:
+            busy = []
+            for root, _ in series:
+                lock_path = os.path.join(root, DOT_DIR_NAME, 'lock')
+                if not os.path.isfile(lock_path):
+                    continue
+                with open(lock_path) as handle:
                     try:
                         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except OSError:
-                        check('并发实例', 'warn', '已有实例持有锁：同一 state 目录不要并发跑')
-                    else:
-                        check('并发实例', 'ok', '没有其他实例持有锁（探测完已释放）')
+                        busy.append(os.path.basename(root))
+            check('并发实例', 'warn' if busy else 'ok',
+                  f'正在下载：{", ".join(busy)}' if busy else '没有系列被其他进程占用')
         proxies = {key: value for key, value in os.environ.items() if 'proxy' in key.lower()}
         if proxies:
             check('出口', 'ok', '、'.join(f'{key}={value}' for key, value in sorted(proxies.items())))

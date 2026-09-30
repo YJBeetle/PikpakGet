@@ -309,99 +309,68 @@ class TestContentVerificationOnPromote(RunLinkHarness):
         self.assertTrue(os.path.exists(os.path.join(self.lib, 'Series', 'a.mp4')))
 
 
-class TestVerifyMode(RunLinkHarness):
-    """`--verify` re-checks the library with the hash the share still reports. It has
-    to tell "corrupt" apart from "the user moved this file out" — the second one is
-    the normal life of a library."""
+class TestExistingFileRecognition(RunLinkHarness):
+    """Existing files are adopted before cloud restore; strict scans stay read-only."""
 
-    def job(self):
-        url = 'https://mypikpak.com/s/EXAMPLEID1111111111'
-        return {'url': url, 'share_id': 'EXAMPLEID1111111111', 'pass_code': '',
-                'folder': 'Series', 'order': 1, 'key': url + '\tSeries'}
-
-    def seed_done(self, file_id, name, content, digest, local=None):
+    def existing(self, content, digest):
         folder = os.path.join(self.lib, 'Series')
         os.makedirs(folder, exist_ok=True)
-        path = local or os.path.join(folder, name)
-        if local is None:
-            with open(path, 'wb') as handle:
-                handle.write(content)
-        record = self.pipeline.state.file(file_id, self.job()['key'])
-        record.update({'state': 'done', 'local': path, 'size': len(content)})
-        node = {'id': file_id, 'name': name, 'size': len(content), 'path': name,
-                'hash': digest, 'is_folder': False}
-        self.node = node
-        job = self.job()
-        self.pipeline.inventory = lambda ignored: {
-            'title': 'Series', 'token': 'T', 'files': [node], 'total': len(content),
-            'folders': 0, 'truncated': False}
-        return job
-
-    def test_a_library_that_hashes_out_passes_and_remembers_the_block_size(self):
-        # 600000 bytes: long enough that the 1 MiB and 512 KiB folds differ, so a
-        # reported block size means the candidate loop really walked the list
-        content = b'pikpak' * 100000
-        job = self.seed_done('F1', 'good.mp4', content, fold(content, 512 << 10))
-        self.assertEqual(self.pipeline.verify([job]), 0)
-        self.assertEqual(self.pipeline.state.file('F1')['hash_piece'], 512 << 10)
-
-    def test_right_length_wrong_bytes_is_quarantined_not_deleted(self):
-        content = b'a' * 4096 + b'b' * 2048
-        job = self.seed_done('F1', 'bad.mp4', content,
-                             fold(b'a' * 4096 + b'c' * 2048, 1 << 20))
-        self.assertEqual(self.pipeline.verify([job]), 1)
-        doomed = os.path.join(self.lib, 'Series', 'bad.mp4.unverified')
-        self.assertTrue(os.path.exists(doomed), 'the bytes survive as evidence')
-        self.assertFalse(os.path.exists(os.path.join(self.lib, 'Series', 'bad.mp4')))
-        record = self.pipeline.state.file('F1')
-        self.assertEqual(record['state'], 'pending', 'so the next download run replaces it')
-        # the record keeps pointing at *both* copies: a sweep that renamed a file and
-        # then dropped the reference left orphans nobody could find again
-        self.assertEqual(record['local'], os.path.join(self.lib, 'Series', 'bad.mp4'))
-        self.assertEqual(record['quarantined'], doomed)
-
-    def test_a_quarantined_file_that_now_hashes_out_is_moved_back(self):
-        # the block-size candidate list will grow; a file parked because of a guess
-        # should come home on its own once the guess covers it
-        content = b'y' * 3000
-        doomed = os.path.join(self.lib, 'Series', 'fixed.mp4.unverified')
-        home = os.path.join(self.lib, 'Series', 'fixed.mp4')
-        job = self.seed_done('F1', 'fixed.mp4', content, fold(content, 1 << 20), local=doomed)
-        with open(doomed, 'wb') as handle:
+        path = os.path.join(folder, 'movie.mp4')
+        with open(path, 'wb') as handle:
             handle.write(content)
-        self.pipeline.state.file('F1').update({'state': 'unverified', 'home': home,
-                                               'quarantined': doomed})
-        self.assertEqual(self.pipeline.verify([job]), 0)
-        self.assertTrue(os.path.exists(os.path.join(self.lib, 'Series', 'fixed.mp4')))
-        self.assertFalse(os.path.exists(doomed))
-        self.assertEqual(self.pipeline.state.file('F1')['state'], 'done')
+        node = {'id': 'SHAREFILE1', 'name': 'movie.mp4', 'size': len(content),
+                'path': 'movie.mp4', 'hash': digest, 'is_folder': False}
+        self.pipeline.inventory = lambda ignored: {
+            'title': 'Series', 'token': 'TOKEN', 'files': [node],
+            'total': len(content), 'folders': 0, 'truncated': False}
+        job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111',
+               'share_id': 'EXAMPLEID1111111111', 'pass_code': '',
+               'folder': 'Series', 'order': 1}
+        return job, path
 
-    def test_one_dead_share_does_not_stop_the_sweep(self):
-        content = b'x' * 5000
-        good = self.seed_done('F1', 'good.mp4', content, fold(content, 1 << 20))
-        dead = {'url': 'https://mypikpak.com/s/DEADDEADDEADDEAD0000', 'share_id': 'DEAD',
-                'pass_code': '', 'folder': 'Dead', 'order': 2}
-        node = self.node
+    def test_default_adopts_same_path_and_size_without_hashing(self):
+        job, path = self.existing(b'a' * 1024, fold(b'b' * 1024, 1 << 20))
+        self.assertEqual(self.pipeline.run_link(job), 'ok')
+        self.assertEqual(self.downloads, [])
+        self.assertEqual(self.pipeline.state.file('SHAREFILE1')['state'], 'done')
+        with open(path, 'rb') as handle:
+            self.assertEqual(handle.read(), b'a' * 1024)
 
-        def inventory(job):
-            if job['url'] == dead['url']:
-                from pikpakget.api import PikPakError
-                raise PikPakError('分享已失效', status=403)
-            return {'title': 'Series', 'token': 'T', 'files': [node], 'total': len(content),
-                    'folders': 0, 'truncated': False}
-        self.pipeline.inventory = inventory
-        self.assertEqual(self.pipeline.verify([dead, good]), 0)
-        self.assertEqual(self.pipeline.state.file('F1')['hash_piece'], 1 << 20,
-                         'the healthy link was still checked')
+    def test_verify_redownloads_same_size_wrong_content_and_preserves_old_bytes(self):
+        job, path = self.existing(b'a' * 1024, fold(bytes(1024), 1 << 20))
+        self.pipeline.args.verify = True
+        self.module.download_stream = self.fake_stream
+        self.assertEqual(self.pipeline.run_link(job), 'ok')
+        self.assertEqual(len(self.downloads), 1)
+        self.assertTrue(any(name.startswith('movie.mp4.conflict-')
+                            for name in os.listdir(os.path.dirname(path))))
+        with open(path, 'rb') as handle:
+            self.assertEqual(handle.read(), bytes(1024))
 
-    def test_a_moved_file_is_not_called_corrupt(self):
-        job = self.seed_done('F1', 'gone.mp4', b'x' * 10, fold(b'x' * 10, 1 << 20),
-                             local=os.path.join(self.lib, 'Series', 'moved-away.mp4'))
-        self.assertEqual(self.pipeline.verify([job]), 0)
+    def test_verify_rechecks_a_file_already_marked_done(self):
+        job, path = self.existing(b'a' * 1024, fold(bytes(1024), 1 << 20))
+        self.pipeline.state.file('SHAREFILE1', self.module.job_key(job)).update(
+            {'state': 'done', 'local': path, 'home': path, 'size': 1024})
+        self.pipeline.args.verify = True
+        self.module.download_stream = self.fake_stream
+        self.assertEqual(self.pipeline.run_link(job), 'ok')
+        self.assertEqual(len(self.downloads), 1)
 
-    def test_a_share_that_gives_no_hash_cannot_be_checked(self):
-        job = self.seed_done('F1', 'nohash.mp4', b'y' * 10, None)
-        self.assertEqual(self.pipeline.verify([job]), 0)
+    def test_verify_without_remote_hash_falls_back_to_size(self):
+        job, _ = self.existing(b'a' * 1024, None)
+        self.pipeline.args.verify = True
+        self.assertEqual(self.pipeline.run_link(job), 'ok')
+        self.assertEqual(self.downloads, [])
+
+    def test_verify_dry_run_reports_mismatch_without_changing_file_or_state(self):
+        job, path = self.existing(b'a' * 1024, fold(b'b' * 1024, 1 << 20))
+        self.pipeline.args.verify = True
+        self.pipeline.args.dry_run = True
+        self.assertEqual(self.pipeline.run([job]), 1)
+        with open(path, 'rb') as handle:
+            self.assertEqual(handle.read(), b'a' * 1024)
+        self.assertEqual(self.downloads, [])
+        self.assertEqual(self.pipeline.state.data['files'], {})
 
 
 class TestTruncationIsVisible(RunLinkHarness):
@@ -774,15 +743,17 @@ class TestTheThreeAnchors(unittest.TestCase):
         self.assertEqual(args.dest, os.path.expanduser(self.cli.DEFAULT_DEST))
         self.assertFalse(args.dest.startswith(elsewhere))
 
-    def test_the_remembered_library_keeps_its_journal_beside_the_library(self):
+    def test_the_remembered_library_has_no_shared_journal(self):
         args = self.resolve()
-        self.assertEqual(args.state_dir, os.path.join(args.dest, '.pikpakget'))
+        self.assertIsNone(args.state_dir)
+        self.assertEqual(self.cli.series_args(args, 'Series').state_dir,
+                         os.path.join(args.dest, 'Series', '.pikpakget'))
         self.assertEqual(args.account_dir, self.home)
 
     def test_another_library_carries_its_own_journal_but_not_its_login(self):
         volume = os.path.join(self.dir, 'nas', 'PikPak')
         args = self.resolve('--dest', volume)
-        self.assertEqual(args.state_dir, os.path.join(volume, '.pikpakget'))
+        self.assertIsNone(args.state_dir)
         self.assertEqual(args.account_dir, self.home,
                          'a second library must not mean a second sign-in')
 
@@ -794,10 +765,11 @@ class TestTheThreeAnchors(unittest.TestCase):
         with contextlib.redirect_stdout(buffer):
             self.assertEqual(self.cli.write_config([f'dest={volume}']), 0)
         self.assertEqual(self.resolve().dest, volume)
-        self.assertEqual(self.resolve().state_dir, os.path.join(volume, '.pikpakget'))
+        self.assertEqual(self.cli.series_args(self.resolve(), 'Series').state_dir,
+                         os.path.join(volume, 'Series', '.pikpakget'))
         third = os.path.join(self.dir, 'third')
-        self.assertEqual(self.resolve('--dest', third).state_dir,
-                         os.path.join(third, '.pikpakget'))
+        self.assertEqual(self.cli.series_args(self.resolve('--dest', third), 'Series').state_dir,
+                         os.path.join(third, 'Series', '.pikpakget'))
 
     def test_only_dest_is_storable(self):
         import contextlib
@@ -2166,12 +2138,56 @@ class TestState(unittest.TestCase):
         self.assertEqual(reloaded.file('FILE1')['size'], 10)
         self.assertEqual(reloaded.data['links'], {})
 
+    def test_series_paths_are_relative_and_survive_moving_the_whole_series(self):
+        from pikpakget.pipeline import STATE_VERSION
+        original = os.path.join(self.dir, 'original')
+        moved = os.path.join(self.dir, 'moved')
+        os.makedirs(os.path.join(original, 'sub'))
+        path = os.path.join(original, '.pikpakget', 'state.json')
+        state = State(path, root=original)
+        record = state.file('FILE1', 'url-a')
+        record.update({'local': os.path.join(original, 'sub', 'one.mp4'),
+                       'home': os.path.join(original, 'sub', 'one.mp4'),
+                       'quarantined': None})
+        state.save()
+        with open(path, encoding='utf-8') as handle:
+            saved = json.load(handle)
+        self.assertEqual(saved['version'], STATE_VERSION)
+        self.assertEqual(next(iter(saved['files'].values()))['local'], 'sub/one.mp4')
+        self.assertNotIn(original, json.dumps(saved))
+        os.rename(original, moved)
+        reloaded = State(os.path.join(moved, '.pikpakget', 'state.json'), root=moved)
+        self.assertEqual(reloaded.file('FILE1')['local'], os.path.join(moved, 'sub', 'one.mp4'))
+
+    def test_series_state_rejects_absolute_and_escaping_paths(self):
+        from pikpakget.api import PikPakError
+        root = os.path.join(self.dir, 'Series')
+        path = os.path.join(root, '.pikpakget', 'state.json')
+        state = State(path, root=root)
+        state.file('FILE1', 'url-a')['local'] = os.path.join(self.dir, 'outside.mp4')
+        with self.assertRaisesRegex(PikPakError, '超出系列目录'):
+            state.save()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump({'version': state.data['version'], 'links': {},
+                       'files': {'file': {'local': '../outside.mp4'}}}, handle)
+        with self.assertRaisesRegex(PikPakError, '超出系列目录'):
+            State(path, root=root)
+
     def test_corrupt_state_is_preserved_not_ignored(self):
         with open(self.path, 'w') as handle:
             handle.write('{not json')
         State(self.path)
         backups = [name for name in os.listdir(self.dir) if 'corrupt' in name]
         self.assertEqual(len(backups), 1)
+
+    def test_read_only_scan_does_not_back_up_corrupt_state(self):
+        from pikpakget.api import PikPakError
+        with open(self.path, 'w') as handle:
+            handle.write('{not json')
+        with self.assertRaisesRegex(PikPakError, '状态文件读不了'):
+            State(self.path, read_only=True)
+        self.assertEqual(os.listdir(self.dir), ['state.json'])
 
     def test_unsupported_state_is_refused_without_replanning(self):
         from pikpakget.api import PikPakError

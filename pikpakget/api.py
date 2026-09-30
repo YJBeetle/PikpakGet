@@ -29,7 +29,7 @@ PACKAGE_NAME = 'com.pikcloud.pikpak'
 SDK_VERSION = '2.0.4.204000'
 
 # the one directory name this tool ever creates: `~/.pikpakget` for the account, and
-# `<library>/.pikpakget` for a library's own journal
+# `<dest>/<series>/.pikpakget` for each series' own journal
 DOT_DIR_NAME = '.pikpakget'
 CLOUD_FOLDER_NAME = 'Pack From Shared'
 DEFAULT_DEST = os.path.join('~', 'Downloads', 'PikPak')
