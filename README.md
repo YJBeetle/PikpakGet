@@ -53,7 +53,8 @@ The cloud staging folder is `Pack From Shared`. At the start of a download, the 
 | `python3 -m pikpakget links.txt --inventory` | Count files, total bytes, and files too large for the drive |
 | `python3 -m pikpakget links.txt --dry-run` | List the download plan without restores, downloads, or cloud cleanup |
 | `python3 -m pikpakget --status` | Show local progress for this library, even while an account is busy |
-| `python3 -m pikpakget links.txt --verify` | Recheck downloaded files against their content hashes |
+| `python3 -m pikpakget links.txt --verify` | Hash-check existing files while downloading |
+| `python3 -m pikpakget links.txt --verify --dry-run` | Audit existing files without downloads or changes |
 | `python3 -m pikpakget --doctor` | Check directories, locks, session, and drive state |
 
 | Option | Default | Effect |
@@ -73,7 +74,7 @@ See `python3 -m pikpakget --help` for all options.
 
 ## Progress and accounts
 
-A library keeps its progress, lock, and logs in `DIR/.pikpakget/`. Only one download process can write to a library at a time. Account data stays on the computer running the tool:
+Each series keeps its progress, lock, and logs in `DIR/<series>/.pikpakget/`. Only one process can write to a series at a time. Different series can run concurrently, while the local account lock still gives each account to one process. Local paths in the journal are relative to the series root, so the whole series can move to another download root. Account data stays on the computer running the tool:
 
 ```text
 ~/.pikpakget/
@@ -85,13 +86,17 @@ A library keeps its progress, lock, and logs in `DIR/.pikpakget/`. Only one down
     └── traffic_capped_at         # latest confirmed downstream cap time, if any
 ```
 
-The account ID is derived from the server user ID. Signing in again to the same account keeps its device ID. Changing `--dest` selects a separate progress journal. Account locks only coordinate processes on the same computer; they cannot coordinate another computer using the same account or cloud folder.
+The account ID is derived from the server user ID. Signing in again to the same account keeps its device ID. Account locks only coordinate processes on the same computer; they cannot coordinate another computer using the same account or cloud folder.
 
 Rerun the same command to continue unfinished files. Completed shares are listed again so newly added files can be found. If the server reports a downstream traffic cap, the tool tries the next available account. If all accounts are cooling, it waits for the earliest one-hour retry time; another cap restarts that account's timer. An hour is a retry interval, not a guarantee that the server quota has reset. Ctrl+C interrupts the wait. If all accounts are occupied by local processes, it reports “no available account.” Session and workspace failures do not start traffic cooldowns.
 
 ## Verification and limits
 
 Downloads go to a `.part` file first. When complete, the tool tries to verify them against the share's content hash. The hash's block format is inferred from samples; failure to match a known block size does not prove that the bytes are corrupt. After retries are exhausted, the bytes are kept as `.unverified` and are not treated as verified.
+
+On a new scan, an existing file is accepted by its relative path and exact size without another download, including when the series journal was lost. This fast check can accept different bytes of the same length. Add `--verify` to check existing files against the share's content hash; a mismatch preserves the old file under a conflict name and downloads a new copy. When the share supplies no hash, the tool warns and falls back to path and size. `--verify --dry-run` scans and reports missing files, wrong sizes, and hash mismatches without downloading, renaming, or cloud cleanup. Newly downloaded files still receive their usual hash check. The previous standalone `--verify` audit mode has been removed.
+
+The old `DIR/.pikpakget/` journal is not read or migrated. Move existing downloads into their series folders yourself; a later run will recognize them using the rules above.
 
 - A single file larger than the account's available cloud space is skipped.
 - One connection is the default; segments can be slower when the server limits throughput.

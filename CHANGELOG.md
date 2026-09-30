@@ -4,6 +4,9 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Store progress, logs and locks under each series directory, with relative local paths. The old root journal is no longer read or migrated.
+- Adopt existing local files by relative path and exact size. `--verify` additionally checks available content hashes during downloads; `--verify --dry-run` performs a read-only audit. Removed the old standalone `--verify` mode.
+
 - Persist each account's confirmed downstream traffic cap time and retry after one hour. If all accounts are cooling, wait for the earliest retry; Ctrl+C interrupts the wait.
 - Avoid a 150-second quota wait when a newly restored file was not yet included in the cloud usage reading before deletion.
 - At download startup, offer to clear leftover items in the selected account's `Pack From Shared` folder, with explicit confirmation.
@@ -11,10 +14,10 @@ Changes since each release are listed here. Before 1.0, command and state format
 - Report `--status` against the last full share inventory instead of only the file records written so far; find `.part` downloads inside nested folders. Make `--doctor` inspect `Pack From Shared` and describe the on-demand cleanup rule.
 - Keep the shared folder tree in the local library, including empty folders. Shares with only root files still put them directly in the selected series folder. Existing files in the previous flat layout are left untouched.
 - Added multiple accounts with separate sessions and device IDs. A download uses one unlocked account at a time and tries another when the current account reaches its downstream traffic limit.
-- Restored files use the selected account's cloud `Pack From Shared` folder. Only when cloud space is insufficient does the tool offer to clear that folder; it waits for explicit confirmation and never clears other cloud folders or the account trash. Local progress and the library lock are stored in `<dest>/.pikpakget/`.
+- Restored files use the selected account's cloud `Pack From Shared` folder. Only when cloud space is insufficient does the tool offer to clear that folder; it waits for explicit confirmation and never clears other cloud folders or the account trash.
 - Removed old single-account state migration and the `--no-sweep` option. Old state formats are rejected with an error.
 - Changed the default to one download connection. `--repeat 0` now means one pass; unfinished work produces a nonzero exit status.
-- Fixed cases where a dry run changed cloud files, a same-size local file was accepted without a content check, a truncated share listing was marked complete, or the same share in two local folders shared one progress record.
+- Fixed cases where a dry run changed cloud files, a truncated share listing was marked complete, or the same share in two local folders shared one progress record.
 - Paginate files directly in a share's root, so a share with more than one root page is fully listed.
 - Reject a missing or empty `--folder-map` with a useful error instead of ignoring it or crashing.
 - Read `--status` from the local library without acquiring an account lock or contacting the cloud.
