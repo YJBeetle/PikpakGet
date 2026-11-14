@@ -282,3 +282,68 @@ class TestAccountRotation(unittest.TestCase):
                                   side_effect=lambda seconds: setattr(cli, 'STOP', True)) as sleep:
             self.assertFalse(cli._wait_for_traffic_retry(4600))
             sleep.assert_called_once_with(1.0)
+
+
+class TestDirectUrlArgs(unittest.TestCase):
+    def collect(self, argv):
+        root = tempfile.mkdtemp()
+        args = cli.build_parser().parse_args(argv + ['--dest', os.path.join(root, 'dest'),
+                                                     '--log', '-'])
+        cli.resolve_dirs(args)
+        seen = []
+
+        class Lock:
+            def close(self):
+                pass
+
+        class Registry:
+            def __init__(self, home):
+                self.items = [{'id': 'one', 'label': 'one'}]
+
+            def choose(self, excluded=(), only=None, respect_cooldown=False):
+                return self.items[0], Lock()
+
+            def client(self, item, logger=None):
+                return type('Client', (), {'prepare_workspace': lambda self: 'pack'})()
+
+        class Pipeline:
+            def __init__(self, args, log, **kwargs):
+                self.files_done = 0
+
+            def run(self, jobs):
+                seen.extend((job['share_id'], job['folder'], job['order']) for job in jobs)
+                return 0
+
+        with mock.patch.object(cli, 'Accounts', Registry), \
+                mock.patch.object(cli, 'Pipeline', Pipeline), \
+                mock.patch.object(cli, '_acquire_lock', return_value=Lock()), \
+                mock.patch.object(cli, '_install_stop_handler'):
+            code = cli._commands(args, Log(quiet=True))
+        return code, seen
+
+    def test_urls_and_files_share_one_ordered_list(self):
+        root = tempfile.mkdtemp()
+        links = os.path.join(root, '系列.txt')
+        with open(links, 'w', encoding='utf-8') as handle:
+            handle.write('https://mypikpak.com/s/EXAMPLEID2222222222\tA\n')
+        code, seen = self.collect([
+            'https://mypikpak.com/s/EXAMPLEID1111111111', links,
+            'https://mypikpak.com/s/EXAMPLEID3333333333\tB'])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, [('EXAMPLEID1111111111', '未分组', 1),
+                                ('EXAMPLEID2222222222', 'A', 2),
+                                ('EXAMPLEID3333333333', 'B', 3)])
+
+    def test_default_folder_overrides_the_fallback(self):
+        code, seen = self.collect(['https://mypikpak.com/s/EXAMPLEID1111111111',
+                                   '--default-folder', '合集'])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, [('EXAMPLEID1111111111', '合集', 1)])
+
+    def test_bad_url_is_a_problem_unless_yes(self):
+        code, seen = self.collect(['https://example.com/s/EXAMPLEID1111111111'])
+        self.assertEqual(code, 2)
+        self.assertEqual(seen, [])
+        code, seen = self.collect(['https://example.com/s/EXAMPLEID1111111111', '--yes'])
+        self.assertEqual(code, 2)
+        self.assertEqual(seen, [])

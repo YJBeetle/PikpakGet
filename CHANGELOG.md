@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Accept share URLs directly as positional arguments, mixed with link files in argument order, with the same `?password=` and tab-folder syntax. Direct URLs have no input file name, so their folder falls back to `--default-folder` or the fixed `未分组` directory.
+
 - Add `--skip-ext` to skip files by extension (case-insensitive, comma-separated, optional leading dot) at listing time. Dry runs, inventories, audits and downloads all plan against the filtered list; skipped files consume no file budget and do not keep a link unfinished.
 
 - Use share URLs as task keys inside each series journal, without the redundant series name. Rename file records' `url` field to `link_key` and bump the journal to v5; older journals are rejected without migration.

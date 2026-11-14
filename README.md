@@ -31,6 +31,9 @@ python3 -m pikpakget links.txt --dest /path/to/library
 
 # Process several link files in argument order, then line order.
 python3 -m pikpakget catalogue/嗷大喵.txt catalogue/FXX.txt --dest /path/to/library
+
+# Pass share URLs directly, mixed with link files.
+python3 -m pikpakget https://mypikpak.com/s/SHARE_ID --dest /path/to/library
 ```
 
 Put one share link on each line of `links.txt`. Blank lines and lines starting with `#` are ignored. Add a folder name after a tab to choose where the link's files land locally:
@@ -41,6 +44,8 @@ https://mypikpak.com/s/SHARE_ID_2	Series
 ```
 
 Links without a folder name default to their input file's name without its extension. For example, unnamed rows in `Studio.txt` go to `DIR/Studio/`. Folder selection uses this priority: the name after the row's tab, a `--folder-map` entry, an explicit `--default-folder`, then the input file's name. Each input file gets its own fallback folder. `--limit` applies to the first N links across all input files.
+
+Positional arguments may also be share URLs directly, merged with link files in argument order, with the same `?password=` and tab-folder syntax. A direct URL has no input file name to fall back to, so its final fallback is the fixed folder `未分组`.
 
 The local library keeps the share's folder tree beneath the chosen series folder. For example, a file in the share's `Studio/Unnumbered` folders goes to `DIR/Series/Studio/Unnumbered/`. A share containing one root file, or several root files without a folder, puts those files directly in `DIR/Series/`. The share title is not used as a directory name. Empty share folders are created, too. The tool does not move files from the previous flat layout; if an old path differs from the new path, it downloads to the new location.
 

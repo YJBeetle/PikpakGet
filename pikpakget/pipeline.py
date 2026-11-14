@@ -154,6 +154,29 @@ def load_folder_map(path):
     return mapping
 
 
+DEFAULT_LINK_FOLDER = '未分组'      # direct URLs have no input file name to fall back to
+
+
+def parse_link_line(line, folder_map, default_folder):
+    """One share link line, optionally "<url>\\t<folder>". Returns (job, problem);
+    blank and comment lines yield (None, None)."""
+    line = line.rstrip('\n').strip()
+    if not line or line.startswith('#'):
+        return None, None
+    override = ''
+    if '\t' in line:
+        line, override = (part.strip() for part in line.split('\t', 1))
+    try:
+        share_id, pass_code = parse_share_url(line)
+    except ValueError as error:
+        return None, str(error)
+    folder = override or folder_map.get(share_id) or default_folder
+    job = {'url': line.split('?')[0].rstrip('/'), 'share_id': share_id,
+           'pass_code': pass_code, 'folder': safe_name(folder), 'order': 0}
+    job['key'] = job_key(job)
+    return job, None
+
+
 def read_links(path, folder_map=None, default_folder=None):
     """Parse the ordered job list: one share link per line, optionally followed by
     a tab and the destination folder name. Returns (jobs, problems)."""
@@ -162,23 +185,12 @@ def read_links(path, folder_map=None, default_folder=None):
     jobs, problems = [], []
     with open(path, encoding='utf-8') as handle:
         for number, raw in enumerate(handle, 1):
-            line = raw.rstrip('\n').strip()
-            if not line or line.startswith('#'):
-                continue
-            override = ''
-            if '\t' in line:
-                line, override = (part.strip() for part in line.split('\t', 1))
-            try:
-                share_id, pass_code = parse_share_url(line)
-            except ValueError as error:
-                problems.append(f'{path}:{number}: {error}')
-                continue
-            folder = override or folder_map.get(share_id) or default_folder
-            job = {'url': line.split('?')[0].rstrip('/'), 'share_id': share_id,
-                   'pass_code': pass_code, 'folder': safe_name(folder),
-                   'order': len(jobs) + 1}
-            job['key'] = job_key(job)
-            jobs.append(job)
+            job, problem = parse_link_line(raw, folder_map, default_folder)
+            if problem:
+                problems.append(f'{path}:{number}: {problem}')
+            if job:
+                job['order'] = len(jobs) + 1
+                jobs.append(job)
     return jobs, problems
 
 

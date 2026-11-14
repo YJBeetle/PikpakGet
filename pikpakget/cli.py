@@ -13,7 +13,8 @@ from . import __version__
 from .api import (DEFAULT_DEST, DOT_DIR_NAME, Client, PikPakError,
                  account_dir)
 from .accounts import Accounts
-from .pipeline import Log, Pipeline, human, load_folder_map, read_links
+from .pipeline import (DEFAULT_LINK_FOLDER, Log, Pipeline, human, load_folder_map,
+                       parse_link_line, read_links)
 
 try:
     import fcntl
@@ -173,7 +174,8 @@ def build_parser():
                     'working around a small cloud quota.')
     parser.add_argument('links', nargs='*', help='text files in processing order, '
                                                  'one share link per line '
-                                                 '(optionally "<url>\\t<folder>")')
+                                                 '(optionally "<url>\\t<folder>"), '
+                                                 'or share URLs directly')
     parser.add_argument('--login', metavar='USERNAME', nargs='?', const='',
                         help='sign in and store a '
                                                             'refreshable session')
@@ -201,7 +203,8 @@ def build_parser():
                                              'a links file line has no folder column')
     parser.add_argument('--default-folder', default=None,
                         help='folder name for unmapped lines without one '
-                             '(default: each input file name without its extension)')
+                             '(default: each input file name without its '
+                             'extension; direct URLs fall back to 未分组)')
     parser.add_argument('--connections', type=int, default=1,
                         help='ranged connections per file. Use 1 for a plain single '
                              'stream. On a free account extra lanes are often starved; '
@@ -343,7 +346,13 @@ def _commands(args, log):
             jobs, problems = [], []
             folder_map = load_folder_map(args.folder_map)
             for path in args.links:
-                batch, issues = read_links(path, folder_map, args.default_folder)
+                if '://' in path:
+                    job, problem = parse_link_line(
+                        path, folder_map, args.default_folder or DEFAULT_LINK_FOLDER)
+                    batch = [job] if job else []
+                    issues = [f'命令行: {problem}'] if problem else []
+                else:
+                    batch, issues = read_links(path, folder_map, args.default_folder)
                 for job in batch:
                     job['order'] = len(jobs) + 1
                     jobs.append(job)
@@ -353,7 +362,7 @@ def _commands(args, log):
             if problems and not args.yes:
                 return 2
             if not jobs:
-                raise PikPakError('链接文件里没有可用链接')
+                raise PikPakError('没有可用链接')
         elif not (args.doctor or args.status_only or args.whoami):
             build_parser().error('one or more links files are required '
                                  '(or use --login/--whoami/--status)')

@@ -31,6 +31,9 @@ python3 -m pikpakget links.txt --dest /path/to/library
 
 # 多个链接文件按参数顺序、文件内行顺序处理
 python3 -m pikpakget catalogue/嗷大喵.txt catalogue/FXX.txt --dest /path/to/library
+
+# 直接传分享链接，可与链接文件混用
+python3 -m pikpakget https://mypikpak.com/s/SHARE_ID --dest /path/to/library
 ```
 
 `links.txt` 每行一个分享链接。空行和以 `#` 开头的行会跳过。用制表符在链接后面写文件夹名，可以指定它在本地的归档位置：
@@ -41,6 +44,8 @@ https://mypikpak.com/s/SHARE_ID_2	剧集
 ```
 
 没有指定文件夹的链接，默认使用它所在 TXT 的文件名（不含扩展名）。例如 `拘束屋.txt` 中未填写 Tab 目录名的链接会保存到 `DIR/拘束屋/`。目录名优先级为：行内 Tab 后的名字、`--folder-map` 映射、显式 `--default-folder`、TXT 文件名。传入多个 TXT 时分别取各自文件名，不会沿用前一个 TXT 的目录。`--limit` 限制合并后的前 N 条链接。
+
+位置参数也可以直接是分享链接，与链接文件按参数顺序合并处理，同样支持 `?password=` 和制表符附加目录名。直接链接没有 TXT 文件名可回退，目录名最后一级为固定默认 `未分组`。
 
 本地会保留分享中的文件夹层级。例如系列目录是 `Series`、分享根目录是 `象人工作室`、里面还有 `未编号`，文件会保存到 `DIR/Series/象人工作室/未编号/`。根目录文件夹与子文件夹按同一规则处理：如果根目录同时有文件和文件夹，根目录文件直接放在 `DIR/Series/`，文件夹里的文件放进对应子目录。分享标题不会被当作文件夹名；空文件夹也会创建。程序不会搬移旧布局中的本地文件；旧路径与新路径不同时，会在新位置重新下载。
 
