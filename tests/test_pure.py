@@ -999,9 +999,8 @@ class TestDoctor(RunLinkHarness):
     def test_the_proxy_line_says_what_a_desktop_proxy_would_not(self):
         import unittest.mock
         self.stub_client()
-        environment = dict(os.environ)
-        environment.pop('HTTPS_PROXY', None)
-        environment.pop('https_proxy', None)
+        environment = {key: value for key, value in os.environ.items()
+                       if 'proxy' not in key.lower()}
         with unittest.mock.patch.dict(os.environ, environment, clear=True):
             _, output = self.run_doctor()
         self.assertIn('不读系统/桌面代理', output)
