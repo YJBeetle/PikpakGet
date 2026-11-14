@@ -67,6 +67,7 @@ The cloud staging folder is `Pack From Shared`. At the start of a download, the 
 | `--account NAME` | automatic | Use only this account, by label or the ID shown by `--accounts`; wait an hour after a traffic cap before retrying |
 | `--connections N` | `1` | Connections per file; values above 1 use `curl` segments |
 | `--max-files N` | unlimited | Limit file processing; failed attempts may also use a slot |
+| `--skip-ext EXT[,EXT...]` | empty | Skip files with matching extensions (case-insensitive, optional leading dot, e.g. `txt,.nfo`); not restored, downloaded, or counted |
 | `--limit N` | unlimited | Process only the first N links |
 | `--repeat N` | `3` | Maximum list passes, including the first; stop early if no file completes in a pass; 0 means one pass |
 | `--gap SEC` | `20` | Seconds to wait between files |
@@ -74,6 +75,8 @@ The cloud staging folder is `Pack From Shared`. At the start of a download, the 
 | `--log -` | log file | Print only to the terminal |
 
 See `python3 -m pikpakget --help` for all options.
+
+`--skip-ext` applies at listing time: `--dry-run`, `--inventory`, `--verify` audits, and downloads all plan against the filtered list. Skipped files use no `--max-files` slot and do not keep a link unfinished. Existing local files with a skipped extension are left untouched.
 
 In a terminal, downloads show a single-file progress bar with bytes, recent speed, and estimated time remaining, refreshed every second. Restore, verification, cloud cleanup, and quota waits have separate messages. Redirected output uses plain progress lines about every 30 seconds instead; `--quiet` hides progress. Log files contain no terminal redraw codes.
 

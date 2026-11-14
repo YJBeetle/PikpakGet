@@ -182,6 +182,17 @@ def read_links(path, folder_map=None, default_folder=None):
     return jobs, problems
 
 
+def parse_skip_ext(text):
+    """`--skip-ext txt,.NFO` -> {'txt', 'nfo'}: leading dots and letter case are
+    typing habits, not part of the match."""
+    exts = set()
+    for part in (text or '').split(','):
+        ext = part.strip().lstrip('.').casefold()
+        if ext:
+            exts.add(ext)
+    return frozenset(exts)
+
+
 class Log:
     def __init__(self, path=None, quiet=False):
         self.quiet = quiet
@@ -380,6 +391,7 @@ class Pipeline:
         self.account_label = account_label
         self.workspace_id = workspace_id
         self.confirm_cleanup = confirm_cleanup
+        self.skip_ext = parse_skip_ext(getattr(args, 'skip_ext', ''))
         self.traffic_capped = False
         self.state = State(os.path.join(args.state_dir, 'state.json')
                            if getattr(args, 'state_dir', None) else None,
@@ -494,10 +506,20 @@ class Pipeline:
     def inventory(self, job):
         walked = self.client.walk_share(job['share_id'], job['pass_code'])
         files = [node for node in walked['nodes'] if not node['is_folder']]
+        skipped = 0
+        if self.skip_ext:
+            kept = []
+            for node in files:
+                if os.path.splitext(node['name'])[1].lstrip('.').casefold() in self.skip_ext:
+                    skipped += 1
+                else:
+                    kept.append(node)
+            files = kept
         return {'title': walked.get('title') or '', 'token': walked['pass_code_token'],
                 'files': files, 'total': sum(node['size'] for node in files),
                 'folders': sum(1 for node in walked['nodes'] if node['is_folder']),
                 'folder_nodes': [node for node in walked['nodes'] if node['is_folder']],
+                'skipped': skipped,
                 'truncated': bool(walked.get('truncated'))}
 
     # ------------------------------------------------------------- one file step
@@ -917,7 +939,8 @@ class Pipeline:
         self.state.save()
         biggest = max((node['size'] for node in files), default=0)
         self.log(f'{job["folder"]}: {len(files)} 个文件 / {human(report["total"])}，'
-                 f'最大单文件 {human(biggest)}')
+                 f'最大单文件 {human(biggest)}'
+                 + (f'，后缀过滤跳过 {report["skipped"]} 个' if report.get('skipped') else ''))
         if self.args.dry_run:
             return 'planned'
         dest_dir = os.path.join(self.args.dest, job['folder'])
@@ -1130,7 +1153,9 @@ class Pipeline:
             for job in jobs[:self.args.limit or len(jobs)]:
                 report = self.inventory(job)
                 self.log(f'{job["folder"]}: 计划 {len(report["files"])} 个文件 / '
-                         f'{human(report["total"])}')
+                         f'{human(report["total"])}'
+                         + (f'，后缀过滤跳过 {report["skipped"]} 个'
+                            if report.get('skipped') else ''))
             return 0
         if self.args.inventory_only:
             self.quota_limit = self.space()['limit']
@@ -1198,7 +1223,7 @@ class Pipeline:
         # Path planning normally probes the volume by creating a temporary file.
         # An audit must be read-only; casefolded matching is the conservative choice.
         self._case_folded = True
-        checked = missing = wrong = no_hash = failed = 0
+        checked = missing = wrong = no_hash = failed = skipped = 0
         for job in jobs:
             try:
                 report = self.inventory(job)
@@ -1208,6 +1233,7 @@ class Pipeline:
                 failed += 1
                 self.log(f'{job["folder"]}: 清单读取失败：{error}', 'error')
                 continue
+            skipped += report.get('skipped', 0)
             for node in report['files']:
                 parent = folders.get(node.get('parent_id') or '')
                 if parent is None:
@@ -1230,12 +1256,14 @@ class Pipeline:
                 else:
                     checked += 1
         self.log(f'只读复核：{checked} 个 hash 相符，{missing} 个缺失，'
-                 f'{wrong} 个不符，{no_hash} 个云端无 hash，{failed} 个无法检查')
+                 f'{wrong} 个不符，{no_hash} 个云端无 hash，{failed} 个无法检查'
+                 + (f'，后缀过滤跳过 {skipped} 个' if skipped else ''))
         return 1 if missing or wrong or failed else 0
 
     def report(self, jobs):
         rows = []
         failed = 0
+        skipped = 0
         for job in jobs:
             try:
                 report = self.inventory(job)
@@ -1246,6 +1274,7 @@ class Pipeline:
                              'files': 0, 'bytes': 0, 'largest': 0, 'unfetchable': 0,
                              'title': '', 'error': str(error)[:160]})
                 continue
+            skipped += report.get('skipped', 0)
             files = report['files']
             largest = max((node['size'] for node in files), default=0)
             rows.append({'folder': job['folder'], 'share_id': job['share_id'],
@@ -1266,7 +1295,8 @@ class Pipeline:
         total = sum(row['bytes'] for row in rows)
         blocked = sum(row['unfetchable'] for row in rows)
         self.log(f'清单写出 {self.args.inventory_out}: {len(rows)} 链接 / {human(total)}'
-                 f' | 单文件超过云盘配额、无法下载 {blocked} 个')
+                 f' | 单文件超过云盘配额、无法下载 {blocked} 个'
+                 + (f' | 后缀过滤跳过 {skipped} 个' if skipped else ''))
         return 1 if failed else 0
 
     def doctor(self):

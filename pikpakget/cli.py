@@ -215,6 +215,10 @@ def build_parser():
                              'whole pass lands nothing')
     parser.add_argument('--limit', type=int, default=0, help='process at most N links')
     parser.add_argument('--max-files', type=int, default=0, help='download at most N files')
+    parser.add_argument('--skip-ext', default='', metavar='EXT[,EXT...]',
+                        help='skip files with these extensions, case-insensitive '
+                             '(e.g. txt,nfo); skipped files are not restored, '
+                             'downloaded or counted, in plans and audits alike')
     parser.add_argument('--inventory', dest='inventory_only', action='store_true',
                         help='size up each link (file count, bytes, largest file) without '
                              'using any cloud space')

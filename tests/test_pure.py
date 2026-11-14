@@ -11,7 +11,7 @@ import argparse
 
 from pikpakget.api import captcha_sign, parse_share_url
 from pikpakget.pipeline import (AUTH_STOP, State, human, load_folder_map,
-                                read_links, safe_name)
+                                parse_skip_ext, read_links, safe_name)
 from pikpakget.stream import plan_segments
 
 # The login, the device id and config.json are anchored in the account directory,
@@ -227,6 +227,52 @@ class RunLinkHarness(unittest.TestCase):
         job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111', 'share_id':
                'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'Series', 'order': 1}
         return self.pipeline.run_link(job), node
+
+
+class TestSkipExt(RunLinkHarness):
+    def walk(self, nodes):
+        self.pipeline.client.walk_share = lambda share_id, pass_code: {
+            'nodes': nodes, 'title': 'Series', 'pass_code_token': 'TOKEN',
+            'truncated': False}
+
+    def test_parse_normalizes_dots_case_and_blanks(self):
+        self.assertEqual(parse_skip_ext(' TXT , .nfo ,, '), frozenset({'txt', 'nfo'}))
+        self.assertEqual(parse_skip_ext(''), frozenset())
+        self.assertEqual(parse_skip_ext(None), frozenset())
+
+    def test_inventory_filters_and_counts_skipped(self):
+        self.pipeline.skip_ext = parse_skip_ext('txt')
+        self.walk([
+            {'id': 'F1', 'name': '广告.TXT', 'size': 226, 'path': '广告.TXT',
+             'is_folder': False},
+            {'id': 'F2', 'name': 'movie.mp4', 'size': 100, 'path': 'movie.mp4',
+             'is_folder': False},
+            {'id': 'D1', 'name': 'folder', 'size': 0, 'path': 'folder',
+             'is_folder': True},
+        ])
+        report = self.pipeline.inventory({'share_id': 'S', 'pass_code': ''})
+        self.assertEqual([node['id'] for node in report['files']], ['F2'])
+        self.assertEqual(report['skipped'], 1)
+        self.assertEqual(report['total'], 100)
+
+    def test_skipped_files_are_not_downloaded_and_link_completes(self):
+        self.pipeline.skip_ext = parse_skip_ext('txt')
+        self.walk([
+            {'id': 'F1', 'name': 'ad.txt', 'size': 226, 'path': 'ad.txt',
+             'is_folder': False},
+            {'id': 'F2', 'name': 'movie.mp4', 'size': 100, 'path': 'movie.mp4',
+             'is_folder': False},
+        ])
+        self.module.download_stream = self.fake_stream
+        job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111',
+               'share_id': 'EXAMPLEID1111111111', 'pass_code': '',
+               'folder': 'Series', 'order': 1,
+               'key': 'https://mypikpak.com/s/EXAMPLEID1111111111'}
+        self.assertEqual(self.pipeline.run_link(job), 'ok')
+        self.assertEqual([os.path.basename(target) for target, _ in self.downloads],
+                         ['movie.mp4.part'])
+        self.assertFalse(os.path.exists(os.path.join(self.lib, 'Series', 'ad.txt')))
+        self.assertEqual(self.pipeline.state.link(job['key'])['status'], 'done')
 
 
 def fold(content, piece):
