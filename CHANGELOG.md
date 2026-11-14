@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Default links without an explicit or mapped folder to their input text file's name without the extension. `--default-folder` can override this fallback.
+
 - Show live per-file transfer progress, speed and ETA for single-stream and segmented downloads. Report processing stages and use sparse plain-text progress when output is redirected.
 
 - Accept multiple link text files in one command and process links in argument order, then line order. Preserve each link's chosen series directory and apply `--limit` to the combined list.

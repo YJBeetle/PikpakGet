@@ -40,7 +40,7 @@ https://mypikpak.com/s/SHARE_ID_1	Movies
 https://mypikpak.com/s/SHARE_ID_2	Series
 ```
 
-Links without a folder name go to `(unfiled)`. You can also pass a CSV or TSV file containing `url,folder` pairs with `--folder-map`. With multiple text files, each link still uses its own row's folder; the text file's name does not choose a download folder. `--limit` applies to the first N links across all input files.
+Links without a folder name default to their input file's name without its extension. For example, unnamed rows in `Studio.txt` go to `DIR/Studio/`. Folder selection uses this priority: the name after the row's tab, a `--folder-map` entry, an explicit `--default-folder`, then the input file's name. Each input file gets its own fallback folder. `--limit` applies to the first N links across all input files.
 
 The local library keeps the share's folder tree beneath the chosen series folder. For example, a file in the share's `Studio/Unnumbered` folders goes to `DIR/Series/Studio/Unnumbered/`. A share containing one root file, or several root files without a folder, puts those files directly in `DIR/Series/`. The share title is not used as a directory name. Empty share folders are created, too. The tool does not move files from the previous flat layout; if an old path differs from the new path, it downloads to the new location.
 

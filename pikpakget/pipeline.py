@@ -155,10 +155,11 @@ def load_folder_map(path):
     return mapping
 
 
-def read_links(path, folder_map=None, default_folder='(unfiled)'):
+def read_links(path, folder_map=None, default_folder=None):
     """Parse the ordered job list: one share link per line, optionally followed by
     a tab and the destination folder name. Returns (jobs, problems)."""
     folder_map = folder_map or {}
+    default_folder = default_folder or os.path.splitext(os.path.basename(path))[0]
     jobs, problems = [], []
     with open(path, encoding='utf-8') as handle:
         for number, raw in enumerate(handle, 1):

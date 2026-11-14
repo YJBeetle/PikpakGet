@@ -199,8 +199,9 @@ def build_parser():
                              'otherwise ~/Downloads/PikPak)')
     parser.add_argument('--folder-map', help='optional CSV/TSV of "url,folder" used when '
                                              'a links file line has no folder column')
-    parser.add_argument('--default-folder', default='(unfiled)',
-                        help='folder name for lines without one (default: %(default)s)')
+    parser.add_argument('--default-folder', default=None,
+                        help='folder name for unmapped lines without one '
+                             '(default: each input file name without its extension)')
     parser.add_argument('--connections', type=int, default=1,
                         help='ranged connections per file. Use 1 for a plain single '
                              'stream. On a free account extra lanes are often starved; '

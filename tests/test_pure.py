@@ -114,7 +114,24 @@ class TestLinksFile(unittest.TestCase):
     def test_default_folder_when_nothing_maps(self):
         path = self.write('https://mypikpak.com/s/AAA1111111111111111\n')
         jobs, _ = read_links(path)
-        self.assertEqual(jobs[0]['folder'], '(unfiled)')
+        self.assertEqual(jobs[0]['folder'], os.path.splitext(os.path.basename(path))[0])
+
+    def test_filename_fallback_is_per_input_and_preserves_inner_dots(self):
+        with tempfile.TemporaryDirectory() as root:
+            for name, expected in [('拘束屋.txt', '拘束屋'), ('另一个.合集.txt', '另一个.合集')]:
+                path = os.path.join(root, name)
+                with open(path, 'w', encoding='utf-8') as handle:
+                    handle.write('https://mypikpak.com/s/AAA1111111111111111\t\n')
+                jobs, _ = read_links(path)
+                self.assertEqual(jobs[0]['folder'], expected)
+
+    def test_folder_selection_priority(self):
+        path = self.write('https://mypikpak.com/s/AAA1111111111111111\t行内目录\n'
+                          'https://mypikpak.com/s/BBB2222222222222222\n'
+                          'https://mypikpak.com/s/CCC3333333333333333\n')
+        jobs, _ = read_links(path, {'AAA1111111111111111': '不会使用',
+                                    'BBB2222222222222222': '映射目录'}, '指定默认')
+        self.assertEqual([job['folder'] for job in jobs], ['行内目录', '映射目录', '指定默认'])
 
 
 class TestSegments(unittest.TestCase):
