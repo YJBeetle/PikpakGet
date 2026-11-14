@@ -209,9 +209,9 @@ def build_parser():
                              'and stays there')
     parser.add_argument('--gap', type=float, default=20,
                         help='seconds to rest between files, to keep request density low')
-    parser.add_argument('--repeat', type=int, default=0,
+    parser.add_argument('--repeat', type=int, default=3,
                         help='pass over the list up to N times, returning to links that '
-                             'had a transient failure (0 = one pass). Stops early if a '
+                             'had a transient failure (default: %(default)s; 0 = one pass). Stops early if a '
                              'whole pass lands nothing')
     parser.add_argument('--limit', type=int, default=0, help='process at most N links')
     parser.add_argument('--max-files', type=int, default=0, help='download at most N files')

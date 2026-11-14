@@ -68,7 +68,7 @@ The cloud staging folder is `Pack From Shared`. At the start of a download, the 
 | `--connections N` | `1` | Connections per file; values above 1 use `curl` segments |
 | `--max-files N` | unlimited | Limit file processing; failed attempts may also use a slot |
 | `--limit N` | unlimited | Process only the first N links |
-| `--repeat N` | `0` | Maximum list passes; 0 means one pass |
+| `--repeat N` | `3` | Maximum list passes, including the first; stop early if no file completes in a pass; 0 means one pass |
 | `--gap SEC` | `20` | Seconds to wait between files |
 | `--no-delete` | off | Keep this run's cloud copies; low space may later prompt to clear them |
 | `--log -` | log file | Print only to the terminal |
