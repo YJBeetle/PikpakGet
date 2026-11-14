@@ -75,6 +75,8 @@ The cloud staging folder is `Pack From Shared`. At the start of a download, the 
 
 See `python3 -m pikpakget --help` for all options.
 
+In a terminal, downloads show a single-file progress bar with bytes, recent speed, and estimated time remaining, refreshed every second. Restore, verification, cloud cleanup, and quota waits have separate messages. Redirected output uses plain progress lines about every 30 seconds instead; `--quiet` hides progress. Log files contain no terminal redraw codes.
+
 ## Progress and accounts
 
 Each series keeps its progress, lock, and logs in `DIR/<series>/.pikpakget/`. Only one process can write to a series at a time. Different series can run concurrently, while the local account lock still gives each account to one process. Local paths in the journal are relative to the series root, so the whole series can move to another download root. Account data stays on the computer running the tool:

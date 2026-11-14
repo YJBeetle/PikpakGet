@@ -292,7 +292,8 @@ def download_stream(url, target, expected_size=0, resume_from=0, timeout=STALL_S
 
 
 def download_segments(url_of, target, total, connections, wait=time.sleep,
-                      stop=lambda: False, log=lambda message, level='info': None):
+                      stop=lambda: False, log=lambda message, level='info': None,
+                      on_progress=None):
     """Download `total` bytes with several concurrent segments, then splice them
     into `target` in order.
 
@@ -303,6 +304,14 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
         if stale != seg_dir:
             shutil.rmtree(stale, ignore_errors=True)
     plan = plan_segments(total, connections, seg_dir)
+    started = time.monotonic()
+
+    def report_progress():
+        if on_progress:
+            on_progress(sum(_segment_have(item) for item in plan),
+                        time.monotonic() - started)
+
+    report_progress()
     last_progress = True        # back off only when a round actually got nowhere
     for attempt in range(len(SEGMENT_RETRY_WAITS) + 1):
         wait_seconds = 0 if last_progress else SEGMENT_RETRY_WAITS[attempt - 1]
@@ -325,6 +334,7 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
                     running.append((item, process))
             for item, process in running:
                 while process.poll() is None:
+                    report_progress()
                     if stop():
                         raise PikPakError('已中断（分段进度保留，重跑即续传）')
                     wait(2)
@@ -335,6 +345,7 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
             reap([process for _, process in running])
         wipe_overshot(plan, log)
         gained = sum(_segment_have(item) for item in plan)
+        report_progress()
         last_progress = gained > before
         if gained <= before:
             # one probe turns "unknown failure" into a decision we can act on: a

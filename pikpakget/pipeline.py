@@ -17,6 +17,10 @@ import shutil
 import sys
 import tempfile
 import time
+import threading
+import unicodedata
+
+from .progress import TransferProgress
 
 from .api import (CLOUD_FOLDER_NAME, DOT_DIR_NAME, Client, PikPakError, RestoreOutcomeUnknown,
                  TrafficCapped, account_dir,
@@ -182,6 +186,9 @@ class Log:
     def __init__(self, path=None, quiet=False):
         self.quiet = quiet
         self.handle = None
+        self.is_terminal = sys.stdout.isatty()
+        self._transfer_visible = False
+        self._output_lock = threading.RLock()
         if path:
             os.makedirs(os.path.dirname(path) or '.', mode=0o700, exist_ok=True)
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -196,6 +203,38 @@ class Log:
             handle.close()
 
     def __call__(self, message, level='info'):
+        with self._output_lock:
+            self.clear_transfer()
+            self._write(message, level)
+
+    def clear_transfer(self):
+        with self._output_lock:
+            if self._transfer_visible:
+                print('\r\033[2K', end='', flush=True)
+                self._transfer_visible = False
+
+    def transfer(self, message):
+        if self.quiet:
+            return
+        with self._output_lock:
+            if self.is_terminal:
+                # Keep the line within the terminal width, avoiding wrapped remnants.
+                try:
+                    width = os.get_terminal_size(sys.stdout.fileno()).columns
+                except (OSError, ValueError):
+                    width = 100
+                visible, used = [], 0
+                for char in message:
+                    used += 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
+                    if used >= width:
+                        break
+                    visible.append(char)
+                print('\r\033[2K' + ''.join(visible), end='', flush=True)
+                self._transfer_visible = True
+            else:
+                self._write(message)
+
+    def _write(self, message, level='info'):
         stamp = time.strftime('%H:%M:%S')
         debug_on = os.environ.get('PIKPAKGET_DEBUG')
         if level == 'debug' and not debug_on:
@@ -389,12 +428,16 @@ class Pipeline:
         # landing exactly, and waiting it out costs 150s per file for nothing
         tolerance = max(expect_drop * 0.02, 2_000_000)
         deadline = time.time() + timeout
+        waiting_reported = False
         while time.time() < deadline:
             if self.stop():
                 return None
             space = self.space()
             if space['usage'] <= floor + tolerance:
                 return space
+            if not waiting_reported:
+                self.log(f'等待空间释放：云端占用 {human(space["usage"])}，最多等待 {timeout}s')
+                waiting_reported = True
             time.sleep(POLL_INTERVAL)
         space = self.space()
         self.log(f'云端空间未在 {timeout}s 内回落，当前占用 {human(space["usage"])}', 'warn')
@@ -618,6 +661,23 @@ class Pipeline:
         return self._case_folded
 
     def fetch_to(self, file_id, node, dest_dir, record=None):
+        final = self.dest_path(node, dest_dir)
+        initial = size_on_disk(final + '.part') or 0
+        segments = f'{final}.part.segs{self.args.connections}'
+        if self.args.connections > 1 and os.path.isdir(segments):
+            initial = sum(size_on_disk(os.path.join(segments, name)) or 0
+                          for name in os.listdir(segments) if name.isdigit())
+        # Callers may supply a simple logging function instead of the CLI logger.
+        if not isinstance(self.log, Log):
+            local, how = self._fetch_to(file_id, node, dest_dir, record)
+        else:
+            with TransferProgress(self.log, node['size'], initial) as progress:
+                local, how = self._fetch_to(file_id, node, dest_dir, record, progress.update)
+        if how == 'transfer-ready':
+            return self.promote(local, final, node, record)
+        return local, how
+
+    def _fetch_to(self, file_id, node, dest_dir, record=None, on_progress=None):
         """Stream the file to its final folder. Downloading straight into the
         destination (via `.part`) means an interrupted run never leaves a partial
         file that looks complete."""
@@ -657,7 +717,7 @@ class Pipeline:
             try:
                 got = download_segments(lambda: self.client.download_url(file_id)[0], part,
                                         expected, self.args.connections, stop=self.stop,
-                                        log=self.log)
+                                        log=self.log, on_progress=on_progress)
             except SegmentRefused as error:
                 # stop knocking on a refused door: finish this file on one
                 # connection and stay there for the rest of the run
@@ -679,13 +739,14 @@ class Pipeline:
             else:
                 if got != expected:
                     raise PikPakError(f'拼装后大小不符 {got}/{expected}')
-                return self.promote(part, final, node, record)
+                return part, 'transfer-ready'
         resume = os.path.getsize(part) if os.path.exists(part) else 0
         url = self.client.download_url(file_id)[0]
-        written = download_stream(url, part, expected, resume, stop=self.stop)
+        written = download_stream(url, part, expected, resume, stop=self.stop,
+                                  on_progress=on_progress)
         if expected and written != expected:
             raise PikPakError(f'下载不完整 {written}/{expected}')
-        return self.promote(part, final, node, record)
+        return part, 'transfer-ready'
 
     def discard_partial(self, final):
         """Drop download fragments that have no matching progress record."""
@@ -773,6 +834,7 @@ class Pipeline:
         evidence of damage."""
         expected = (node or {}).get('hash')
         if expected:
+            self.log('校验中：正在核对下载文件的内容 hash')
             piece = verify_content(part, expected, self.hash_sizes(record))
             if piece is None:
                 reason = f'云端 {expected[:16]}… 无候选分片命中'
@@ -793,6 +855,7 @@ class Pipeline:
         if not mine or self.args.no_delete:
             return
         before = self.space()['usage'] if not self.stop() else None
+        self.log('清理云端：正在删除已下载的副本')
         self.client.cleanup(mine)
         self.created.difference_update(mine)
         if not self.stop():
@@ -984,7 +1047,9 @@ class Pipeline:
                 record['state'] = 'restoring'
                 record['attempts'] += 1
                 self.state.save()
+                self.log('转存中：正在准备云端副本')
                 restored = self.reuse_or_restore(job, node, record, report['token'])
+                self.log('等待云端文件就绪')
                 self.wait_ready(restored, node['size'])
                 if self.stop():
                     raise PikPakError('已中断（云端副本与本地进度已保留）')
