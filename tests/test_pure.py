@@ -314,7 +314,7 @@ class TestContentVerificationOnPromote(RunLinkHarness):
             handle.write(b'junk' * 25)
         home = os.path.join(self.lib, 'Series', 'a.mp4')
         self.pipeline.state.file('SHAREFILE1',
-                                 'https://mypikpak.com/s/EXAMPLEID1111111111\tSeries').update(
+                                 'https://mypikpak.com/s/EXAMPLEID1111111111').update(
             {'state': 'pending', 'local': home, 'home': home, 'quarantined': doomed})
         self.assertEqual(self.run_one(size=100, digest=fold(b'\0' * 100, 1 << 20))[0], 'ok')
         self.assertTrue(os.path.exists(home))
@@ -468,7 +468,7 @@ class TestTruncationIsVisible(RunLinkHarness):
         self.pipeline.inventory = truncated_walked
         job = {'url': 'https://mypikpak.com/s/EXAMPLEID1111111111', 'share_id':
                'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'Series', 'order': 1}
-        job['key'] = job['url'] + '\tSeries'
+        job['key'] = job['url']
         self.pipeline.run_link(job)
         self.assertTrue(self.pipeline.state.link(job['key'])['truncated'])
 
@@ -523,7 +523,7 @@ class TestPipelineStartup(unittest.TestCase):
         state = State(os.path.join(state_dir, 'state.json'))
         with open(local, 'wb') as handle:
             handle.write(b'x' * 10)
-        state.file('F1', 'https://mypikpak.com/s/EXAMPLEID1\tSeries').update(
+        state.file('F1', 'https://mypikpak.com/s/EXAMPLEID1').update(
             {'state': 'done', 'local': local, 'size': 10, 'path': 'done.mp4'})
         state.save()
         return state_dir
@@ -653,7 +653,7 @@ class TestStatusWithoutProgress(unittest.TestCase):
     def test_status_uses_last_inventory_totals_and_finds_nested_partial(self):
         import contextlib
         import io
-        key = 'https://mypikpak.com/s/EXAMPLEID1111111111\tSeries'
+        key = 'https://mypikpak.com/s/EXAMPLEID1111111111'
         self.pipeline.state.link(key).update({
             'order': 1, 'folder': 'Series', 'status': 'active',
             'file_count': 1199, 'total_bytes': 2000})
@@ -1239,7 +1239,7 @@ class TestRestorePlacement(unittest.TestCase):
 
 
 class TestLinkIdentity(unittest.TestCase):
-    """A link is identified by URL *and* folder, and leftovers from earlier lists
+    """A link is identified by URL within a series, and leftovers from earlier lists
     must not make a clean run look unfinished."""
 
     def write(self, text):
@@ -1255,7 +1255,8 @@ class TestLinkIdentity(unittest.TestCase):
         jobs, problems = read_links(self.write(f'{url}\tSeriesA\n{url}\tSeriesB\n'))
         self.assertEqual(problems, [])
         self.assertEqual([job['folder'] for job in jobs], ['SeriesA', 'SeriesB'])
-        self.assertNotEqual(jobs[0]['key'], jobs[1]['key'])
+        self.assertEqual(jobs[0]['key'], url)
+        self.assertEqual(jobs[1]['key'], url)
 
 
     def test_a_stale_link_from_an_earlier_list_does_not_extend_the_run(self):
@@ -1279,7 +1280,7 @@ class TestLinkIdentity(unittest.TestCase):
         pipeline.run_link = finish
         jobs = [{'url': 'https://mypikpak.com/s/EXAMPLEID1111111111', 'share_id':
                  'EXAMPLEID1111111111', 'pass_code': '', 'folder': 'Series', 'order': 1}]
-        jobs[0]['key'] = jobs[0]['url'] + '\t' + jobs[0]['folder']
+        jobs[0]['key'] = jobs[0]['url']
         self.assertEqual(pipeline.run(jobs), 0)
         self.assertEqual(passes, [jobs[0]['key']],
                          'one pass is enough when this run finished its own list')
@@ -1294,13 +1295,21 @@ class TestSameShareTwoDownloads(RunLinkHarness):
             'title': 'Series', 'token': 'TOKEN', 'files': [node],
             'total': 100, 'folders': 0, 'truncated': False}
         url = 'https://mypikpak.com/s/EXAMPLEID1111111111'
+        states = []
         for folder in ('SeriesA', 'SeriesB'):
+            self.pipeline.state = State(os.path.join(self.lib, folder, '.pikpakget', 'state.json'),
+                                        root=os.path.join(self.lib, folder))
             job = {'url': url, 'share_id': 'EXAMPLEID1111111111',
                    'pass_code': '', 'folder': folder, 'order': 1}
             self.assertEqual(self.pipeline.run_link(job), 'ok')
             self.assertTrue(os.path.isfile(os.path.join(self.lib, folder, 'a.mp4')))
+            states.append(self.pipeline.state)
         self.assertEqual(len(self.downloads), 2)
-        self.assertEqual(len(self.pipeline.state.data['files']), 2)
+        for state in states:
+            self.assertEqual(len(state.data['files']), 1)
+            record = next(iter(state.data['files'].values()))
+            self.assertEqual(record['link_key'], url)
+            self.assertNotIn('url', record)
 
 
 class TestShareLocalHierarchy(RunLinkHarness):
@@ -1605,7 +1614,7 @@ class TestMovedDownloadsDoNotBreakTheRun(RunLinkHarness):
     def test_a_moved_finished_file_is_redownloaded_instead_of_crashing(self):
         gone = os.path.join(self.lib, 'Series', 'a.mp4')
         record = self.pipeline.state.file('SHAREFILE1',
-            'https://mypikpak.com/s/EXAMPLEID1111111111\tSeries')
+            'https://mypikpak.com/s/EXAMPLEID1111111111')
         record.update({'state': 'downloaded', 'local': gone, 'size': 100})
         outcome, node = self.run_one()                      # before the fix: FileNotFoundError
         self.assertEqual(len(self.downloads), 1)
@@ -1619,9 +1628,9 @@ class TestMovedDownloadsDoNotBreakTheRun(RunLinkHarness):
         with open(keep, 'wb') as handle:
             handle.truncate(100)
         self.pipeline.state.file('SHAREFILE1',
-            'https://mypikpak.com/s/EXAMPLEID1111111111\tSeries').update(
+            'https://mypikpak.com/s/EXAMPLEID1111111111').update(
             {'state': 'done', 'local': keep, 'size': 100,
-             'url': 'https://mypikpak.com/s/EXAMPLEID1111111111'})
+             'link_key': 'https://mypikpak.com/s/EXAMPLEID1111111111'})
         outcome, node = self.run_one()
         self.assertEqual(self.downloads, [])            # complete file, no re-download
         self.assertEqual(outcome, 'ok')                 # nothing pending for this link
@@ -2221,6 +2230,8 @@ class TestState(unittest.TestCase):
         state.save()
         reloaded = State(self.path)
         self.assertEqual(reloaded.file('FILE1')['size'], 10)
+        self.assertEqual(reloaded.file('FILE1')['link_key'], 'url-a')
+        self.assertNotIn('url', reloaded.file('FILE1'))
         self.assertEqual(reloaded.data['links'], {})
 
     def test_series_paths_are_relative_and_survive_moving_the_whole_series(self):
@@ -2281,6 +2292,17 @@ class TestState(unittest.TestCase):
         with self.assertRaises(PikPakError):
             State(self.path)
         self.assertEqual(os.listdir(self.dir), ['state.json'])
+
+    def test_previous_series_format_is_rejected_without_migration(self):
+        from pikpakget.api import PikPakError
+        old = {'version': 4, 'links': {'share\tSeries': {}},
+               'files': {'share\tSeries\tF1': {'url': 'share\tSeries'}}}
+        with open(self.path, 'w', encoding='utf-8') as handle:
+            json.dump(old, handle)
+        with self.assertRaisesRegex(PikPakError, '状态版本不受支持'):
+            State(self.path)
+        with open(self.path, encoding='utf-8') as handle:
+            self.assertEqual(json.load(handle), old)
 
     def test_files_of_groups_by_link(self):
         state = State(self.path)

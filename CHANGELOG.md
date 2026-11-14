@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Use share URLs as task keys inside each series journal, without the redundant series name. Rename file records' `url` field to `link_key` and bump the journal to v5; older journals are rejected without migration.
+
 - Default to at most three download passes, including the first. A pass with no completed files still stops retries early; explicit `--repeat 0` keeps the single-pass behavior.
 
 - Default links without an explicit or mapped folder to their input text file's name without the extension. `--default-folder` can override this fallback.

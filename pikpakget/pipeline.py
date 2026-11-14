@@ -37,14 +37,13 @@ QUARANTINE_SUFFIX = '.unverified'     # bytes we keep but cannot vouch for
 THROTTLE_STOP = 3                     # consecutive refusals before giving up
 AUTH_STOP = 3                         # ... and consecutive 401/403s before blaming the session
 
-STATE_VERSION = 4
+STATE_VERSION = 5
 LOCAL_PATH_FIELDS = ('local', 'home', 'quarantined')
 
 
 def job_key(job):
-    """A link is identified by URL *and* destination folder, so the same share can
-    be filed into two folders in one list without the second being skipped."""
-    return f"{job['url']}\t{job.get('folder', '')}"
+    """Each series owns its journal, so a share URL identifies a link within it."""
+    return job['url']
 
 
 def file_key(link_key, file_id):
@@ -301,24 +300,24 @@ class State:
             raise PikPakError(f'本地文件路径超出系列目录：{path}')
         return os.path.relpath(path, self.root)
 
-    def link(self, url):
-        return self.data['links'].setdefault(url, {'status': 'pending', 'attempts': 0})
+    def link(self, link_key):
+        return self.data['links'].setdefault(link_key, {'status': 'pending', 'attempts': 0})
 
-    def file(self, file_id, url=None):
-        key = file_key(url, file_id) if url is not None else file_id
-        if url is None and key not in self.data['files']:
+    def file(self, file_id, link_key=None):
+        key = file_key(link_key, file_id) if link_key is not None else file_id
+        if link_key is None and key not in self.data['files']:
             matches = [rec for rec in self.data['files'].values()
                        if rec.get('source_id') == file_id]
             if len(matches) == 1:
                 return matches[0]
         return self.data['files'].setdefault(key, {
-            'state': 'pending', 'attempts': 0, 'url': url, 'restored_id': None,
+            'state': 'pending', 'attempts': 0, 'link_key': link_key, 'restored_id': None,
             'source_id': file_id,
             'local': None, 'home': None, 'quarantined': None,
             'size': 0, 'seconds': None, 'error': None})
 
-    def files_of(self, url):
-        return [rec for rec in self.data['files'].values() if rec.get('url') == url]
+    def files_of(self, link_key):
+        return [rec for rec in self.data['files'].values() if rec.get('link_key') == link_key]
 
     def reset_transient_failures(self):
         """Give files that failed last time a full budget again.
@@ -1419,9 +1418,9 @@ class Pipeline:
     def status(self):
         """Per-folder progress plus an ETA from the throughput this run actually
         got, not a theoretical one."""
-        by_url = collections.defaultdict(list)
+        by_link = collections.defaultdict(list)
         for rec in self.state.data['files'].values():
-            by_url[rec.get('url')].append(rec)
+            by_link[rec.get('link_key')].append(rec)
         links = sorted(self.state.data['links'].items(), key=lambda kv: kv[1].get('order') or 999)
         if links:
             # a header with no rows underneath reads as broken output, which is exactly
@@ -1429,8 +1428,8 @@ class Pipeline:
             print(f"{'folder':<26}{'status':<12}{'files':>7}{'done':>6}"
                   f"{'bytes':>11}{'planned':>11}  progress")
         totals = {'got': 0, 'planned': 0, 'spent': 0.0, 'skipped': 0}
-        for url, info in links:
-            records = by_url.get(url, [])
+        for link_key, info in links:
+            records = by_link.get(link_key, [])
             recorded_bytes = sum(rec['size'] for rec in records)
             planned = max(int(info.get('total_bytes') or 0), recorded_bytes)
             file_count = max(int(info.get('file_count') or 0), len(records))
@@ -1444,7 +1443,7 @@ class Pipeline:
             unverified = sum(1 for rec in records if rec['state'] == 'unverified')
             if unverified:
                 note += f'  ({unverified} unverified)'
-            folder = (info.get('folder') or url[-10:])[:25]
+            folder = (info.get('folder') or link_key[-10:])[:25]
             print(f'{folder:<26}{(info.get("status") or "-"):<12}{file_count:>7}{done:>6}'
                   f'{human(got):>11}{human(planned):>11}  {share:5.1f}% '
                   f"{'#' * int(share / 4)}{note}")

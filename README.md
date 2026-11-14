@@ -105,6 +105,8 @@ On a new scan, an existing file is accepted by its relative path and exact size 
 
 The old `DIR/.pikpakget/` journal is not read or migrated. Move existing downloads into their series folders yourself; a later run will recognize them using the rules above.
 
+The current journal format is v5. Each share URL identifies a task within its series; file records refer to it through `link_key`, without appending the series name. Older journals are rejected without migration. Move the old `state.json` aside before rerunning. Completed files can be recognized again; fragments without a matching progress record are discarded when their file is processed.
+
 - A single file larger than the account's available cloud space is skipped.
 - One connection is the default; segments can be slower when the server limits throughput.
 - PikPak's API, quotas, and rate controls may change. Account rotation cannot guarantee that every account will download successfully.
