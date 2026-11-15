@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Share links with a folder path (`/s/<share id>/<folder id>/…`) now list and download only that subtree, treating the linked folder as the root. Plain links keep whole-share behavior.
+
 - Accept share URLs directly as positional arguments, mixed with link files in argument order, with the same `?password=` and tab-folder syntax. Direct URLs have no input file name, so their folder falls back to `--default-folder` or the fixed `未分组` directory.
 
 - Add `--skip-ext` to skip files by extension (case-insensitive, comma-separated, optional leading dot) at listing time. Dry runs, inventories, audits and downloads all plan against the filtered list; skipped files consume no file budget and do not keep a link unfinished.

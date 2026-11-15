@@ -47,6 +47,8 @@ Links without a folder name default to their input file's name without its exten
 
 Positional arguments may also be share URLs directly, merged with link files in argument order, with the same `?password=` and tab-folder syntax. A direct URL has no input file name to fall back to, so its final fallback is the fixed folder `未分组`.
 
+A link may carry a folder path (`/s/<share id>/<folder id>/…`). Such a link lists and downloads only that folder's contents, treating the linked folder as the root: its own name adds no extra level, and deeper subfolders are kept.
+
 The local library keeps the share's folder tree beneath the chosen series folder. For example, a file in the share's `Studio/Unnumbered` folders goes to `DIR/Series/Studio/Unnumbered/`. A share containing one root file, or several root files without a folder, puts those files directly in `DIR/Series/`. The share title is not used as a directory name. Empty share folders are created, too. The tool does not move files from the previous flat layout; if an old path differs from the new path, it downloads to the new location.
 
 The cloud staging folder is `Pack From Shared`. At the start of a download, the tool lists any leftover items there and asks whether to clear them. It asks again if a later file cannot fit in the available cloud space. Only typing `y` (or `Y`) permanently deletes them; Enter, `n`, declining, or running without an interactive terminal keeps them and continues. If a file still cannot fit and the folder is empty or clearing it does not free enough space, that file is marked failed. Cleanup is limited to `Pack From Shared`.

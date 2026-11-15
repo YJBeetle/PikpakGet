@@ -150,6 +150,17 @@ def parse_share_url(text):
     return match.group(1), code
 
 
+def share_root_id(text):
+    """`/s/<share_id>/<folder>/<folder>` links name a subtree; the last path
+    segment is the folder to list from. Plain share links return ''."""
+    match = SHARE_ID.search(text or '')
+    if not match:
+        return ''
+    tail = (text or '')[match.end():].split('?', 1)[0]
+    parts = [part for part in tail.split('/') if part]
+    return parts[-1] if parts else ''
+
+
 def _loads(raw):
     try:
         return json.loads(raw.decode('utf-8'))
@@ -516,10 +527,12 @@ class Client:
                 'child_count': int(params.get('total_count') or 0) if folder else None,
                 'hash': item.get('hash') or None, 'mime': item.get('mime_type') or ''}
 
-    def walk_share(self, share_id, pass_code='', max_nodes=20000):
+    def walk_share(self, share_id, pass_code='', max_nodes=20000, root_id=''):
         """Flatten a share into files and folders. Costs no cloud space, so it is
         safe to run before deciding what to download. Folders expose their
-        aggregate `total_size`, which makes sizing a subtree cheap."""
+        aggregate `total_size`, which makes sizing a subtree cheap. `root_id`
+        starts the walk inside a folder named by the share link, treating that
+        folder as the root."""
         info = self.share_info(share_id, pass_code)
         status = info.get('share_status')
         if status and status != 'OK':
@@ -529,12 +542,13 @@ class Client:
         # /v1/share includes only the first root page. /v1/share/detail can
         # paginate the root just as it does nested folders.
         nodes = []
-        for item in self.share_children(share_id, token, ''):
+        for item in self.share_children(share_id, token, root_id):
             nodes.append(self.node(item))
             if len(nodes) >= max_nodes:
                 break
         if not nodes:
-            raise PikPakError('分享根目录返回空清单，无法确认分享真的为空；'
+            where = '链接指定的文件夹' if root_id else '分享根目录'
+            raise PikPakError(f'{where}返回空清单，无法确认分享真的为空；'
                               '已停止处理此链接，避免把未下载内容标记为完成')
         queue = [(node['id'], node['path']) for node in nodes if node['is_folder']]
         while queue and len(nodes) < max_nodes:

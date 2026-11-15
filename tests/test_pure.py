@@ -9,7 +9,7 @@ import unittest
 
 import argparse
 
-from pikpakget.api import captcha_sign, parse_share_url
+from pikpakget.api import captcha_sign, parse_share_url, share_root_id
 from pikpakget.pipeline import (AUTH_STOP, State, human, load_folder_map,
                                 parse_skip_ext, read_links, safe_name)
 from pikpakget.stream import plan_segments
@@ -36,6 +36,13 @@ class TestShareUrl(unittest.TestCase):
     def test_rejects_other_hosts(self):
         with self.assertRaises(ValueError):
             parse_share_url('https://example.com/s/EXAMPLEID1234567890ab')
+
+    def test_root_id_is_the_last_folder_of_the_path(self):
+        self.assertEqual(share_root_id('https://mypikpak.com/s/EXAMPLEID1234567890ab'), '')
+        self.assertEqual(share_root_id('nonsense'), '')
+        self.assertEqual(
+            share_root_id('https://mypikpak.com/s/EXAMPLEID1234567890ab/F1/F2?password=42'),
+            'F2')
 
 
 class TestSafeName(unittest.TestCase):
@@ -85,6 +92,14 @@ class TestLinksFile(unittest.TestCase):
         path = self.write('https://mypikpak.com/s/AAA1111111111111111\tExampleSeries\n')
         jobs, _ = read_links(path)
         self.assertEqual(jobs[0]['folder'], 'ExampleSeries')
+
+    def test_folder_path_in_link_becomes_root_id(self):
+        path = self.write('https://mypikpak.com/s/AAA1111111111111111/BBB222/CCC333\n')
+        jobs, problems = read_links(path)
+        self.assertEqual(problems, [])
+        self.assertEqual(jobs[0]['root_id'], 'CCC333')
+        self.assertEqual(jobs[0]['url'],
+                         'https://mypikpak.com/s/AAA1111111111111111/BBB222/CCC333')
 
     def test_folder_map_applies_without_a_column(self):
         links = self.write('https://mypikpak.com/s/AAA1111111111111111\n')
@@ -229,9 +244,59 @@ class RunLinkHarness(unittest.TestCase):
         return self.pipeline.run_link(job), node
 
 
+class TestWalkRoot(unittest.TestCase):
+    def client_with(self, pages):
+        from pikpakget.api import Client
+        client = Client.__new__(Client)
+        client.share_info = lambda share_id, pass_code='': {
+            'pass_code_token': 'T', 'title': 'share', 'file_num': 1}
+        asked = []
+
+        def children(share_id, token, parent_id):
+            asked.append(parent_id)
+            return iter(pages.get(parent_id, []))
+
+        client.share_children = children
+        return client, asked
+
+    def test_root_id_starts_inside_the_linked_folder(self):
+        client, asked = self.client_with({
+            'D2': [{'id': 'F1', 'name': 'a', 'kind': 'drive#file', 'size': '1'},
+                   {'id': 'D3', 'name': 'sub', 'kind': 'drive#folder'}],
+            'D3': [{'id': 'F2', 'name': 'b', 'kind': 'drive#file', 'size': '2'}],
+        })
+        walked = client.walk_share('S', root_id='D2')
+        self.assertEqual(asked, ['D2', 'D3'])
+        self.assertEqual([node['path'] for node in walked['nodes']],
+                         ['a', 'sub', 'sub/b'])
+
+    def test_empty_linked_folder_is_an_error(self):
+        from pikpakget.api import PikPakError
+        client, _ = self.client_with({})
+        with self.assertRaisesRegex(PikPakError, '链接指定的文件夹'):
+            client.walk_share('S', root_id='D2')
+
+
+class TestSubfolderInventory(RunLinkHarness):
+    def test_inventory_passes_the_root_id_to_the_walk(self):
+        seen = []
+
+        def walk(share_id, pass_code, root_id=''):
+            seen.append(root_id)
+            return {'nodes': [{'id': 'F1', 'name': 'a.mp4', 'size': 10,
+                               'path': 'a.mp4', 'is_folder': False}],
+                    'title': 't', 'pass_code_token': 'T', 'truncated': False}
+
+        self.pipeline.client.walk_share = walk
+        report = self.pipeline.inventory({'share_id': 'S', 'pass_code': '',
+                                          'root_id': 'D2'})
+        self.assertEqual(seen, ['D2'])
+        self.assertEqual(len(report['files']), 1)
+
+
 class TestSkipExt(RunLinkHarness):
     def walk(self, nodes):
-        self.pipeline.client.walk_share = lambda share_id, pass_code: {
+        self.pipeline.client.walk_share = lambda share_id, pass_code, **kwargs: {
             'nodes': nodes, 'title': 'Series', 'pass_code_token': 'TOKEN',
             'truncated': False}
 

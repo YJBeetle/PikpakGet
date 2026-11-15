@@ -24,7 +24,7 @@ from .progress import TransferProgress
 
 from .api import (CLOUD_FOLDER_NAME, DOT_DIR_NAME, Client, PikPakError, RestoreOutcomeUnknown,
                  TrafficCapped, account_dir,
-                 parse_share_url)
+                 parse_share_url, share_root_id)
 from .stream import (PIECE_SIZES, SegmentRefused, download_segments, download_stream,
                      verify_content)
 
@@ -172,7 +172,8 @@ def parse_link_line(line, folder_map, default_folder):
         return None, str(error)
     folder = override or folder_map.get(share_id) or default_folder
     job = {'url': line.split('?')[0].rstrip('/'), 'share_id': share_id,
-           'pass_code': pass_code, 'folder': safe_name(folder), 'order': 0}
+           'pass_code': pass_code, 'folder': safe_name(folder),
+           'root_id': share_root_id(line), 'order': 0}
     job['key'] = job_key(job)
     return job, None
 
@@ -516,7 +517,8 @@ class Pipeline:
 
     # ----------------------------------------------------------------- planning
     def inventory(self, job):
-        walked = self.client.walk_share(job['share_id'], job['pass_code'])
+        walked = self.client.walk_share(job['share_id'], job['pass_code'],
+                                        root_id=job.get('root_id') or '')
         files = [node for node in walked['nodes'] if not node['is_folder']]
         skipped = 0
         if self.skip_ext:
