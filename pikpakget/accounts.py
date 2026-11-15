@@ -66,7 +66,7 @@ class Accounts:
             if os.path.exists(temporary):
                 os.remove(temporary)
 
-    def client(self, item, logger=None):
+    def client(self, item, logger=None, stop=None):
         device_path = self.device_path(item['id'])
         try:
             with open(device_path, encoding='utf-8') as handle:
@@ -75,7 +75,7 @@ class Accounts:
         except FileNotFoundError as error:
             raise PikPakError(f'账号 {item["label"]} 缺少专属设备 ID；请重新运行 --login') from error
         return Client(session_path=os.path.join(self.directory(item['id']), 'session.json'),
-                      device_id_path=device_path, logger=logger)
+                      device_id_path=device_path, logger=logger, stop=stop)
 
     def login(self, username, password, logger=None):
         # The server's user id, not the spelling of the login, identifies an account.

@@ -294,6 +294,91 @@ class TestSubfolderInventory(RunLinkHarness):
         self.assertEqual(len(report['files']), 1)
 
 
+class TestInterruptibleClient(RunLinkHarness):
+    def client(self):
+        from pikpakget.api import Client
+        return Client(session_path=None)
+
+    def test_call_stops_before_any_request(self):
+        from pikpakget.api import PikPakError
+        client = self.client()
+        client.stop = lambda: True
+        client._raw = lambda *a, **k: self.fail('must not send')
+        with self.assertRaisesRegex(PikPakError, '已中断'):
+            client.call('GET', '/v1/files')
+
+    def test_backoff_wait_is_interruptible(self):
+        import types
+        import pikpakget.api as api
+        client = self.client()
+        states = iter([False, True])
+        client.stop = lambda: next(states)
+        real_time = api.time
+        api.time = types.SimpleNamespace(monotonic=real_time.monotonic,
+                                         time=real_time.time, sleep=lambda s: None)
+        self.addCleanup(setattr, api, 'time', real_time)
+        with self.assertRaisesRegex(api.PikPakError, '已中断'):
+            client._wait(240)
+
+    def drip_client(self, stopped):
+        import types
+        import urllib.request
+        import pikpakget.api as api
+        client = self.client()
+        client.stop = lambda: stopped[0]
+        clock = [0.0]
+
+        class Drip:
+            status = 200
+
+            def read(self, size):
+                clock[0] += 30
+                return b'x'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        real_time = api.time
+        api.time = types.SimpleNamespace(monotonic=lambda: clock[0],
+                                         time=real_time.time, sleep=real_time.sleep)
+        self.addCleanup(setattr, api, 'time', real_time)
+        original = urllib.request.urlopen
+        urllib.request.urlopen = lambda *a, **k: Drip()
+        self.addCleanup(setattr, urllib.request, 'urlopen', original)
+        return client
+
+    def test_a_drip_feeding_read_hits_the_total_deadline(self):
+        client = self.drip_client([False])
+        status, body = client._raw('GET', 'https://host/x')
+        self.assertIsNone(status)
+        self.assertIn('总时限', body['error_description'])
+
+    def test_stop_during_read_raises_immediately(self):
+        from pikpakget.api import PikPakError
+        stopped = [False]
+        client = self.drip_client(stopped)
+
+        def flip():
+            stopped[0] = True
+            return True
+
+        client.stop = flip
+        with self.assertRaisesRegex(PikPakError, '已中断'):
+            client._raw('GET', 'https://host/x')
+
+    def test_restore_polling_stops(self):
+        from pikpakget.api import PikPakError
+        self.pipeline.stop = lambda: True
+        self.pipeline.workspace_id = 'W'
+        self.pipeline.client.list_folder = lambda parent: []
+        self.pipeline.client.restore = lambda *a, **k: {}
+        with self.assertRaisesRegex(PikPakError, '已中断'):
+            self.pipeline.restore_one({'share_id': 'S'}, {'id': 'F', 'size': 1}, {}, 'T')
+
+
 class TestSkipExt(RunLinkHarness):
     def walk(self, nodes):
         self.pipeline.client.walk_share = lambda share_id, pass_code, **kwargs: {
@@ -2141,9 +2226,17 @@ class TestTransientNetworkRetry(unittest.TestCase):
 
     def waits(self):
         import pikpakget.api as api
-        original = api.time.sleep
-        api.time.sleep = lambda seconds: self.slept.append(seconds)
-        self.addCleanup(setattr, api.time, 'sleep', original)
+        clock = [0.0]
+        original_sleep, original_monotonic = api.time.sleep, api.time.monotonic
+
+        def fake_sleep(seconds):
+            self.slept.append(seconds)
+            clock[0] += seconds
+
+        api.time.sleep = fake_sleep
+        api.time.monotonic = lambda: clock[0]
+        self.addCleanup(setattr, api.time, 'sleep', original_sleep)
+        self.addCleanup(setattr, api.time, 'monotonic', original_monotonic)
 
     def test_a_dropped_connection_is_retried_and_then_succeeds(self):
         self.feed([(None, {'error_description': 'URLError: SSL EOF'}),
@@ -2151,7 +2244,7 @@ class TestTransientNetworkRetry(unittest.TestCase):
                    (200, {'quota': {'limit': '10'}})])
         self.waits()
         self.assertEqual(self.client.about(), {'quota': {'limit': '10'}})
-        self.assertEqual(self.slept, [5, 15])
+        self.assertEqual(sum(self.slept), 5 + 15)
 
     def test_giving_up_only_happens_after_the_whole_wait_ladder(self):
         import pikpakget.api as api
@@ -2159,7 +2252,7 @@ class TestTransientNetworkRetry(unittest.TestCase):
         self.waits()
         with self.assertRaises(api.PikPakError):
             self.client.about()
-        self.assertEqual(len(self.slept), 5)
+        self.assertEqual(sum(self.slept), 5 + 15 + 45 + 120 + 240)
 
     def test_a_permanent_error_is_not_retried(self):
         self.feed([(404, {'error_description': 'share not found'})])
@@ -2172,7 +2265,7 @@ class TestTransientNetworkRetry(unittest.TestCase):
         self.feed([(429, {'error_description': 'slow down'}), (200, {})],)
         self.waits()
         self.client.about()
-        self.assertEqual(self.slept, [30])
+        self.assertEqual(sum(self.slept), 30)
 
 
 class TestStopOnZeroProgress(unittest.TestCase):
@@ -2642,9 +2735,17 @@ class TestDailyTrafficCap(unittest.TestCase):
         self.client.captcha_token = lambda action: 'captcha-token'
         self.slept = []
         import pikpakget.api as api
-        original = api.time.sleep
-        api.time.sleep = lambda seconds: self.slept.append(seconds)
-        self.addCleanup(setattr, api.time, 'sleep', original)
+        clock = [0.0]
+        original_sleep, original_monotonic = api.time.sleep, api.time.monotonic
+
+        def fake_sleep(seconds):
+            self.slept.append(seconds)
+            clock[0] += seconds
+
+        api.time.sleep = fake_sleep
+        api.time.monotonic = lambda: clock[0]
+        self.addCleanup(setattr, api.time, 'sleep', original_sleep)
+        self.addCleanup(setattr, api.time, 'monotonic', original_monotonic)
 
     def feed(self, result):
         self.client._raw = lambda *args, **kwargs: result

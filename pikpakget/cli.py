@@ -460,7 +460,7 @@ def _run_group(args, log, registry, jobs):
             print('没有可用账号：所有账号都被其他进程锁定')
             return 3, completed
         try:
-            client = registry.client(item, logger=log)
+            client = registry.client(item, logger=log, stop=lambda: STOP)
             if actual_download:
                 try:
                     workspace_id = client.prepare_workspace()

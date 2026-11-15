@@ -68,6 +68,9 @@ THROTTLE_BACKOFF = (30, 120, 480, 900)
 # A dropped TLS session is routine on this network, not a verdict about the link:
 # retry it quickly, and only give up after several attempts.
 NETWORK_RETRY_WAITS = (5, 15, 45, 120, 240)
+# The per-socket timeout cannot bound a read that keeps receiving dribs of data;
+# a total wall-clock deadline per request can.
+REQUEST_DEADLINE = 120
 SHARE_ID = re.compile(
     r'(?:mypikpak\.com|pickpackapp\.com|mypikpak\.net|pikpak\.me)/s/([A-Za-z0-9_\-]{8,})')
 # The free tier's daily downstream traffic cap (20 GB) arrives as an ordinary HTTP 400
@@ -239,9 +242,11 @@ def load_device_id(path):
 
 
 class Client:
-    def __init__(self, session_path=None, device_id_path=None, logger=None, timeout=45):
+    def __init__(self, session_path=None, device_id_path=None, logger=None, timeout=45,
+                 stop=None):
         self.log = logger or (lambda message, level='info': None)
         self.timeout = timeout
+        self.stop = stop or (lambda: False)
         self.session = Session(session_path)
         self.device_id_path = device_id_path
         self.device_id = load_device_id(device_id_path) if device_id_path else uuid.uuid4().hex
@@ -356,8 +361,20 @@ class Client:
         self._requests += 1
         try:
             request = urllib.request.Request(url, data=data, method=method, headers=merged)
+            deadline = time.monotonic() + REQUEST_DEADLINE
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return response.status, _loads(response.read())
+                chunks = []
+                while True:
+                    if self.stop():
+                        raise PikPakError('已中断（进度已保存）')
+                    if time.monotonic() > deadline:
+                        return None, {'error_description':
+                                      f'请求超过 {REQUEST_DEADLINE}s 总时限'}
+                    chunk = response.read(1 << 16)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                return response.status, _loads(b''.join(chunks))
         except urllib.error.HTTPError as error:
             return error.code, _loads(error.read())
         except (urllib.error.URLError, TimeoutError, OSError) as error:
@@ -398,9 +415,13 @@ class Client:
         attempts = retries if retries is not None else len(NETWORK_RETRY_WAITS)
         last = {}
         for attempt in range(attempts):
+            if self.stop():
+                raise PikPakError('已中断（进度已保存）', action=action)
             status, body = self._raw(method, f'{base}{path}', params=params, json_body=json_body,
                                      headers={'x-action': action,
                                               'x-captcha-token': self.captcha_token(action)})
+            if self.stop():
+                raise PikPakError('已中断（进度已保存）', action=action)
             if status and 200 <= status < 300:
                 return body
             last = {'status': status, **body}
@@ -413,7 +434,7 @@ class Client:
                                      action=action)
                 wait = NETWORK_RETRY_WAITS[min(attempt, len(NETWORK_RETRY_WAITS) - 1)]
                 self.log(f'网络抖动（{problem[:70]}），{wait}s 后重试', 'warn')
-                time.sleep(wait)
+                self._wait(wait)
                 continue
             if TRAFFIC_CAP.search(problem) or TRAFFIC_CAP.search(str(body)):
                 # a fact about the account today, not about this file: no back-off
@@ -429,12 +450,22 @@ class Client:
                 wait = THROTTLE_BACKOFF[min(attempt, len(THROTTLE_BACKOFF) - 1)]
                 self.log(f'被限流（HTTP {status}），等待 {wait}s 后重试', 'warn')
                 self._captchas.clear()
-                time.sleep(wait)
+                self._wait(wait)
                 continue
             raise PikPakError(problem, status=status, code=body.get('error_code'),
                               action=action, throttled=throttled)
         raise PikPakError(str(last.get('error_description') or '重试后仍失败'),
                           status=last.get('status'), action=action, throttled=True)
+
+    def _wait(self, seconds):
+        """Back-off that Ctrl+C ends promptly instead of after the full wait."""
+        deadline = time.monotonic() + seconds
+        while not self.stop():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(0.5, remaining))
+        raise PikPakError('已中断（进度已保存）')
 
     # --------------------------------------------------------------------- read
     def about(self):

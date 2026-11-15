@@ -586,6 +586,8 @@ class Pipeline:
 
         deadline = time.time() + POLL_TIMEOUT
         while True:
+            if self.stop():
+                raise PikPakError('已中断（云端副本与本地进度已保留）')
             fresh = candidates()
             if len(fresh) > 1:
                 raise PikPakError('临时目录出现多个同大小的新文件，无法确认转存副本')

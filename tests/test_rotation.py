@@ -51,7 +51,7 @@ class TestAccountRotation(unittest.TestCase):
             def choose(self, excluded=(), only=None, respect_cooldown=False):
                 return self.items[0], Lock()
 
-            def client(self, item, logger=None):
+            def client(self, item, logger=None, stop=None):
                 return type('Client', (), {'prepare_workspace': lambda self: 'pack'})()
 
         class Pipeline:
@@ -181,7 +181,7 @@ class TestAccountRotation(unittest.TestCase):
             def traffic_retry_at(self, item):
                 return cli.time.time() + 3600 if item['id'] in self.capped else 0
 
-            def client(self, item, logger=None):
+            def client(self, item, logger=None, stop=None):
                 return type('FakeClient', (), {
                     'prepare_workspace': lambda self, **kwargs: 'folder'})()
 
@@ -242,7 +242,7 @@ class TestAccountRotation(unittest.TestCase):
             def mark_traffic_capped(self, item):
                 self.retry[item['id']] = clock[0] + 3600
 
-            def client(self, item, logger=None):
+            def client(self, item, logger=None, stop=None):
                 return type('Client', (), {'prepare_workspace': lambda self: 'pack'})()
 
         class Pipeline:
@@ -303,7 +303,7 @@ class TestDirectUrlArgs(unittest.TestCase):
             def choose(self, excluded=(), only=None, respect_cooldown=False):
                 return self.items[0], Lock()
 
-            def client(self, item, logger=None):
+            def client(self, item, logger=None, stop=None):
                 return type('Client', (), {'prepare_workspace': lambda self: 'pack'})()
 
         class Pipeline:
