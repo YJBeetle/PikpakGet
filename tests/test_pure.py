@@ -1,4 +1,5 @@
 """Tests for the pure logic. Synthetic data only — no live account, no real links."""
+import base64
 import collections
 import hashlib
 import json
@@ -43,6 +44,28 @@ class TestShareUrl(unittest.TestCase):
         self.assertEqual(
             share_root_id('https://mypikpak.com/s/EXAMPLEID1234567890ab/F1/F2?password=42'),
             'F2')
+
+    def test_url_folder_ids_are_xor_decoded(self):
+        self.assertEqual(
+            share_root_id('https://mypikpak.com/s/VOI_jbW1wK4JM2fj1iha0UElo1/'
+                          'AAAzHZ_B1IcHk4P6jYbQU5mjo1_VOI/AAh3OLzHS16i3-n6evHr95r9o2_VOp'),
+            'VOpItQlyi_Cr7I4ZrNmxJtvYo2')
+
+    def test_decode_round_trips_the_web_encode(self):
+        from pikpakget.api import decode_share_file_id
+
+        def b64e(data):
+            return base64.urlsafe_b64encode(data).decode().rstrip('=')
+
+        def b64d(text):
+            return base64.urlsafe_b64decode(text + '=' * (-len(text) % 4))
+
+        sid = 'VOI_jbW1wK4JM2fj1iha0UElo1'
+        fid = 'VOpItQlyi_Cr7I4ZrNmxJtvYo2'
+        mixed = bytes(a ^ b for a, b in zip(b64d(fid[:-2]), b64d(sid[:-2])))
+        encoded = b64e(mixed) + fid[-2:] + '_' + fid[:3]
+        self.assertEqual(decode_share_file_id(encoded, sid), fid)
+        self.assertEqual(decode_share_file_id(fid, sid), fid)
 
 
 class TestSafeName(unittest.TestCase):

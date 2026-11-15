@@ -11,6 +11,7 @@ mutating call carries a short-lived shield `captcha_token` minted locally.
 import json
 import os
 import re
+import base64
 import time
 import urllib.error
 import urllib.parse
@@ -155,13 +156,30 @@ def parse_share_url(text):
 
 def share_root_id(text):
     """`/s/<share_id>/<folder>/<folder>` links name a subtree; the last path
-    segment is the folder to list from. Plain share links return ''."""
+    segment is the folder to list from, once decoded. Plain share links return ''."""
     match = SHARE_ID.search(text or '')
     if not match:
         return ''
     tail = (text or '')[match.end():].split('?', 1)[0]
     parts = [part for part in tail.split('/') if part]
-    return parts[-1] if parts else ''
+    return decode_share_file_id(parts[-1], match.group(1)) if parts else ''
+
+
+def decode_share_file_id(file_id, share_id):
+    """Share URLs obfuscate folder ids by XOR against the share id (the web app
+    decodes them before calling /v1/share/detail); raw ids would 404. Anything
+    that does not fit the encoding passes through unchanged."""
+    if not file_id or not share_id or len(file_id) == len(share_id):
+        return file_id
+    try:
+        body = base64.urlsafe_b64decode(file_id[:-6] + '=' * (-len(file_id[:-6]) % 4))
+        key = base64.urlsafe_b64decode(share_id[:-2] + '=' * (-len(share_id[:-2]) % 4))
+    except ValueError:
+        return file_id
+    if len(body) != len(key):
+        return file_id
+    mixed = bytes(a ^ b for a, b in zip(body, key))
+    return base64.urlsafe_b64encode(mixed).decode().rstrip('=') + file_id[-6:-4]
 
 
 def _loads(raw):

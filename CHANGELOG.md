@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Decode the obfuscated folder ids carried by share URL paths (XOR against the share id, mirroring the web app) before listing the subtree; the raw path ids previously failed with 404.
+
 - Ctrl+C now ends network back-off waits and in-flight API requests promptly: the retry ladder and restore polling observe the stop flag, and each request has a 120s total wall-clock deadline, so a drip-feeding connection can no longer stall a run for minutes.
 
 - Share links with a folder path (`/s/<share id>/<folder id>/…`) now list and download only that subtree, treating the linked folder as the root. Plain links keep whole-share behavior.
