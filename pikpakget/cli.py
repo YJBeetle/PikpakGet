@@ -233,7 +233,12 @@ def build_parser():
                         help='plan only; no restore, download or cloud cleanup')
     parser.add_argument('--no-delete', action='store_true',
                         help='keep the cloud copies after downloading (fills the quota fast)')
-    parser.add_argument('--yes', action='store_true', help='ignore unparsable link lines')
+    parser.add_argument('--skip-bad-lines', action='store_true',
+                        help='ignore unparsable link lines')
+    parser.add_argument('-y', '--yes', action='store_true',
+                        help='auto-confirm cloud cleanup without prompting; only '
+                             'leftovers owned by this series are deleted, unknown '
+                             'items are kept')
     parser.add_argument('--log', default='auto', help="write a log file into each series' "
                                                      "progress directory (default), or '-' "
                                                      "to log to stdout only")
@@ -361,7 +366,7 @@ def _commands(args, log):
                 problems.extend(issues)
             for problem in problems:
                 log(problem, 'error')
-            if problems and not args.yes:
+            if problems and not args.skip_bad_lines:
                 return 2
             if not jobs:
                 raise PikPakError('没有可用链接')

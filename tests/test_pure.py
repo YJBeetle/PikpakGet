@@ -1497,6 +1497,53 @@ class TestRestorePlacement(unittest.TestCase):
         self.assertTrue(pipeline.reclaim_workspace(100))
         self.assertEqual(cloud.deleted, ['old'])
 
+    def test_yes_deletes_only_owned_leftovers_without_prompting(self):
+        from pikpakget.pipeline import Log, Pipeline
+
+        class Cloud:
+            def __init__(self):
+                self.items = [{'id': 'mine', 'name': 'mine.mp4', 'size': 100},
+                              {'id': 'unknown', 'name': 'unknown.mp4', 'size': 50}]
+                self.deleted = []
+
+            def list_folder(self, parent_id):
+                return list(self.items)
+
+            def cleanup(self, ids):
+                self.deleted.extend(ids)
+                self.items = [item for item in self.items if item['id'] not in ids]
+
+        cloud = Cloud()
+        args = argparse.Namespace(state_dir=tempfile.mkdtemp(), max_files=0, yes=True)
+        pipeline = Pipeline(args, Log(quiet=True), client=cloud,
+                            workspace_id='pack', account_id='account',
+                            confirm_cleanup=lambda *a: self.fail('-y must not prompt'))
+        record = pipeline.state.file('src', 'link')
+        record.update({'restored_id': 'mine', 'account_id': 'account'})
+        pipeline.space = lambda: {'usage': 150, 'free': 1000}
+        pipeline.wait_space_freed = lambda size, before: None
+        self.assertTrue(pipeline.reclaim_workspace(100))
+        self.assertEqual(cloud.deleted, ['mine'])
+        self.assertEqual([item['id'] for item in cloud.items], ['unknown'])
+
+    def test_yes_without_owned_leftovers_keeps_everything(self):
+        from pikpakget.pipeline import Log, Pipeline
+
+        class Cloud:
+            def __init__(self):
+                self.items = [{'id': 'unknown', 'name': 'unknown.mp4', 'size': 50}]
+
+            def list_folder(self, parent_id):
+                return list(self.items)
+
+            def cleanup(self, ids):
+                raise AssertionError('unknown items must not be deleted')
+
+        args = argparse.Namespace(state_dir=tempfile.mkdtemp(), max_files=0, yes=True)
+        pipeline = Pipeline(args, Log(quiet=True), client=Cloud(),
+                            workspace_id='pack', account_id='account')
+        self.assertFalse(pipeline.reclaim_workspace(100))
+
 
 class TestLinkIdentity(unittest.TestCase):
     """A link is identified by URL within a series, and leftovers from earlier lists

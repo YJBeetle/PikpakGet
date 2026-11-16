@@ -344,6 +344,6 @@ class TestDirectUrlArgs(unittest.TestCase):
         code, seen = self.collect(['https://example.com/s/EXAMPLEID1111111111'])
         self.assertEqual(code, 2)
         self.assertEqual(seen, [])
-        code, seen = self.collect(['https://example.com/s/EXAMPLEID1111111111', '--yes'])
+        code, seen = self.collect(['https://example.com/s/EXAMPLEID1111111111', '--skip-bad-lines'])
         self.assertEqual(code, 2)
         self.assertEqual(seen, [])

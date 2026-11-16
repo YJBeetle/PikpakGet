@@ -413,6 +413,7 @@ class Pipeline:
         self.account_label = account_label
         self.workspace_id = workspace_id
         self.confirm_cleanup = confirm_cleanup
+        self.auto_yes = getattr(args, 'yes', False)
         self.skip_ext = parse_skip_ext(getattr(args, 'skip_ext', ''))
         self.traffic_capped = False
         self.state = State(os.path.join(args.state_dir, 'state.json')
@@ -922,10 +923,18 @@ class Pipeline:
             return False
         owned = {rec['restored_id'] for rec in self.state.data['files'].values()
                  if rec.get('account_id') == self.account_id and rec.get('restored_id')}
-        if not self.confirm_cleanup or not self.confirm_cleanup(items, owned):
-            self.log('用户未确认清理 Pack From Shared，保留其中内容', 'warn')
-            return False
-        ids = [item['id'] for item in items]
+        if self.auto_yes:
+            ids = [item['id'] for item in items if item['id'] in owned]
+            unknown = len(items) - len(ids)
+            if unknown:
+                self.log(f'-y 自动清理：{unknown} 项归属未知，保留', 'warn')
+            if not ids:
+                return False
+        else:
+            if not self.confirm_cleanup or not self.confirm_cleanup(items, owned):
+                self.log('用户未确认清理 Pack From Shared，保留其中内容', 'warn')
+                return False
+            ids = [item['id'] for item in items]
         before = self.space()['usage']
         self.client.cleanup(ids)
         self.created.difference_update(ids)
@@ -933,10 +942,12 @@ class Pipeline:
             if rec.get('account_id') == self.account_id and rec.get('restored_id') in ids:
                 rec['restored_id'] = None
         self.state.save()
-        self.wait_space_freed(sum(int(item.get('size') or 0) for item in items), before)
-        remaining = self.client.list_folder(self.workspace_id)
-        if remaining:
-            raise PikPakError(f'Pack From Shared 清理后仍有 {len(remaining)} 项')
+        self.wait_space_freed(sum(int(item.get('size') or 0) for item in items
+                                  if item['id'] in ids), before)
+        left = [item['id'] for item in self.client.list_folder(self.workspace_id)
+                if item['id'] in ids]
+        if left:
+            raise PikPakError(f'Pack From Shared 清理后仍有 {len(left)} 项')
         return self.space()['free'] >= needed
 
     # --------------------------------------------------------------------- drive
