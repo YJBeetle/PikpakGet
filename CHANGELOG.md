@@ -4,13 +4,23 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+## 0.2.0 — 2026-11-16
+
+### Upgrade notes
+
+- Progress now belongs to each series at `<dest>/<series>/.pikpakget/`. The current format is v5; old journals and sessions are not migrated. Move old `state.json` files aside before rerunning. Completed files are recognized by path and exact size; untracked fragments are discarded when their file is processed.
+- `--verify` now checks existing files during downloading; combine it with `--dry-run` for a read-only audit. `--yes` now confirms cleanup of owned cloud leftovers; use `--skip-bad-lines` to ignore invalid link lines.
+- Links without an explicit or mapped folder use the input file name without its extension. The default is now at most three passes, including the first, with an early stop when a pass completes no files.
+
+### Changes
+
 - Keep single-stream filesystem open, write and flush failures separate from network errors, preserving the disk error and normal attempt accounting.
 
 - Interrupt segmented retry backoff and lane launch delays promptly on Ctrl+C, without starting another transfer after the stop request.
 
 - Wait for every segment writer to finish before retrying, merging or removing segment files. Propagate disk write and flush errors to the download pipeline instead of treating them as stalled transfers.
 
-- Segmented downloads pipe curl's ~16 KiB output through a 1 MiB reader thread, so the destination volume sees the same write size as the single-stream path (recordsize alignment on ZFS).
+- Segmented downloads buffer curl output into 1 MiB writes to reduce small writes. This changes write size, without guaranteeing aligned offsets or a measured ZFS speedup.
 
 - With `--verify`, a file is not hashed again while its source hash, size and mtime all match the last successful check; freshly verified downloads record that state immediately, so repeated runs and passes stop re-reading the whole library.
 
