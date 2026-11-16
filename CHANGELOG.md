@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Segmented downloads pipe curl's ~16 KiB output through a 1 MiB reader thread, so the destination volume sees the same write size as the single-stream path (recordsize alignment on ZFS).
+
 - With `--verify`, a file is not hashed again while its source hash, size and mtime all match the last successful check; freshly verified downloads record that state immediately, so repeated runs and passes stop re-reading the whole library.
 
 - Network-level failures no longer consume a file's attempt budget or count toward the rate-limit stop: exhausting the transport retry ladder (or a dropped download stream) is marked as network, so a long outage leaves the file retryable instead of permanently failing it.

@@ -2147,6 +2147,17 @@ class TestSegmentRequest(unittest.TestCase):
             handle.truncate(1000)
         self.assertIsNone(self.stream._spawn(self.item, 'http://invalid.invalid/url'))
 
+    def test_the_spawned_stream_is_drained_into_sized_writes(self):
+        import io
+        import types
+        payload = b'x' * (3 * (1 << 20) + 10)
+        process = types.SimpleNamespace(stdout=io.BytesIO(payload),
+                                        terminate=lambda: self.fail('must not terminate'))
+        path = os.path.join(tempfile.mkdtemp(), 'segment')
+        self.stream._drain(process, path)
+        with open(path, 'rb') as handle:
+            self.assertEqual(handle.read(), payload)
+
     def test_a_segment_longer_than_its_range_is_unusable(self):
         # two writers on one file leave a shifted middle: the head is right, and the
         # length can still come out right, so keeping the prefix yields a file that

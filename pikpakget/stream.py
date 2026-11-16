@@ -16,6 +16,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import threading
 import time
 
 from .api import PikPakError
@@ -222,16 +223,31 @@ def reap(processes):
             process.wait()
 
 
+def _drain(process, path):
+    """Re-block curl's output into CHUNK-sized writes.
+
+    curl's write callback emits ~16 KiB pieces; the destination volume (a ZFS
+    dataset tuned for 1 MiB records, typically) sees far fewer, larger writes
+    this way."""
+    try:
+        with open(path, 'ab') as handle:
+            shutil.copyfileobj(process.stdout, handle, CHUNK)
+    except OSError:
+        process.terminate()
+    finally:
+        process.stdout.close()
+
+
 def _spawn(item, url):
     """Fetch one segment's remaining bytes in append mode."""
     if segment_request(item)['remaining'] <= 0:
         return None
-    handle = open(item['path'], 'ab')
-    try:
-        return subprocess.Popen(build_command(item, url), stdout=handle,
-                                stderr=subprocess.DEVNULL)
-    finally:
-        handle.close()
+    process = subprocess.Popen(build_command(item, url), stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL)
+    process.sink = threading.Thread(target=_drain, args=(process, item['path']),
+                                    daemon=True)
+    process.sink.start()
+    return process
 
 
 def probe_status(url, start=0, log=None, note=''):
@@ -344,6 +360,10 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
             raise
         finally:
             reap([process for _, process in running])
+            for _, process in running:
+                sink = getattr(process, 'sink', None)
+                if sink:
+                    sink.join(timeout=30)
         wipe_overshot(plan, log)
         gained = sum(_segment_have(item) for item in plan)
         report_progress()
