@@ -83,21 +83,29 @@ class TestAccountRotation(unittest.TestCase):
             (os.path.join(args.dest, 'B', '.pikpakget'),
              [('EXAMPLEID2222222222', 'B', 2)])])
 
-    def test_cloud_cleanup_defaults_to_no(self):
+    def test_cloud_cleanup_defaults_to_yes(self):
         items = [{'id': 'old', 'name': 'old.mp4'}]
         with mock.patch.object(cli.sys.stdin, 'isatty', return_value=True), \
                 mock.patch.object(cli, '_ask_line') as answer:
-            for value, expected in [('y', True), ('Y', True), ('', False),
-                                    ('n', False), ('删除', False)]:
+            for value, expected in [('y', True), ('Y', True), ('', True),
+                                    ('  ', True), ('yes', True), ('YES', True),
+                                    ('n', False), ('N', False), ('no', False),
+                                    ('删除', False)]:
                 answer.return_value = value
                 self.assertEqual(cli._confirm_cloud_cleanup(
                     items, set(), 'account', lambda *args: None), expected)
-            self.assertIn('[y/N]', answer.call_args.args[0])
+            self.assertIn('[Y/n]', answer.call_args.args[0])
         with mock.patch.object(cli.sys.stdin, 'isatty', return_value=False), \
                 mock.patch.object(cli, '_ask_line',
                                   side_effect=AssertionError('must not prompt')):
             self.assertFalse(cli._confirm_cloud_cleanup(
                 items, set(), 'account', lambda *args: None))
+
+    def test_cleanup_eof_is_not_confirmation(self):
+        with mock.patch.object(cli.sys.stdin, 'isatty', return_value=True), \
+                mock.patch.object(cli, '_ask_line', side_effect=EOFError):
+            self.assertFalse(cli._confirm_cloud_cleanup(
+                [{'id': 'unknown'}], set(), 'account', lambda *args: None))
 
     def test_cleanup_prompt_aborts_when_interrupted(self):
         import contextlib

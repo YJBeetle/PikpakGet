@@ -944,17 +944,12 @@ class Pipeline:
         owned = {rec['restored_id'] for rec in self.state.data['files'].values()
                  if rec.get('account_id') == self.account_id and rec.get('restored_id')}
         if self.auto_yes:
-            ids = [item['id'] for item in items if item['id'] in owned]
-            unknown = len(items) - len(ids)
-            if unknown:
-                self.log(f'-y 自动清理：{unknown} 项归属未知，保留', 'warn')
-            if not ids:
-                return False
+            self.log(f'-y 自动确认：清理 Pack From Shared 中全部 {len(items)} 项', 'warn')
         else:
             if not self.confirm_cleanup or not self.confirm_cleanup(items, owned):
                 self.log('用户未确认清理 Pack From Shared，保留其中内容', 'warn')
                 return False
-            ids = [item['id'] for item in items]
+        ids = [item['id'] for item in items]
         before = self.space()['usage']
         self.client.cleanup(ids)
         self.created.difference_update(ids)

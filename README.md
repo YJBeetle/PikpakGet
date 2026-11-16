@@ -51,7 +51,7 @@ A link may carry a folder path (`/s/<share id>/<folder id>/…`). Such a link li
 
 The local library keeps the share's folder tree beneath the chosen series folder. For example, a file in the share's `Studio/Unnumbered` folders goes to `DIR/Series/Studio/Unnumbered/`. A share containing one root file, or several root files without a folder, puts those files directly in `DIR/Series/`. The share title is not used as a directory name. Empty share folders are created, too. The tool does not move files from the previous flat layout; if an old path differs from the new path, it downloads to the new location.
 
-The cloud staging folder is `Pack From Shared`. At the start of a download, the tool lists any leftover items there and asks whether to clear them. It asks again if a later file cannot fit in the available cloud space. Only typing `y` (or `Y`) permanently deletes them; Enter, `n`, declining, or running without an interactive terminal keeps them and continues. `-y` skips the prompt and cleans automatically, deleting only leftovers owned by this series' records; unknown items are kept with a warning. If a file still cannot fit and the folder is empty or clearing it does not free enough space, that file is marked failed. Cleanup is limited to `Pack From Shared`.
+The cloud staging folder is `Pack From Shared`. At the start of a download, the tool lists leftover items and asks whether to clear them; it asks again if a later file cannot fit. The prompt is `[Y/n]`: Enter, `y`, or `yes` (case-insensitive) permanently deletes all listed items, including those with unknown ownership. Entering `n`, other text, or interrupting keeps the items. `-y` skips the prompt and confirms the same full cleanup. Without an interactive terminal or `-y`, items are kept. If a file still cannot fit and the folder is empty or clearing it does not free enough space, that file is marked failed. Cleanup is limited to `Pack From Shared`.
 
 ## Common commands
 
@@ -81,7 +81,7 @@ The cloud staging folder is `Pack From Shared`. At the start of a download, the 
 | `--no-delete` | off | Keep this run's cloud copies; low space may later prompt to clear them |
 | `--log -` | log file | Print only to the terminal |
 | `-v` | off | Show stage detail (restore, verify, cleanup) at debug level |
-| `-y` | off | Skip the cleanup prompt; auto-delete cloud leftovers owned by this series, keep unknown ones |
+| `-y` | off | Skip the cleanup prompt; delete all `Pack From Shared` items, including unknown ones |
 | `--skip-bad-lines` | off | Ignore unparsable link lines |
 
 See `python3 -m pikpakget --help` for all options.

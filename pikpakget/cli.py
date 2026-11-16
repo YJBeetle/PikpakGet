@@ -54,7 +54,8 @@ def _confirm_cloud_cleanup(items, owned_ids, label, log):
         log('当前没有交互终端，未清理；需要清理时请在交互式终端重跑', 'warn')
         return False
     try:
-        return _ask_line('永久删除上述 Pack From Shared 项目及其内容？[y/N] ').strip().lower() == 'y'
+        answer = _ask_line('永久删除上述 Pack From Shared 项目及其内容？[Y/n] ').strip().lower()
+        return answer in ('', 'y', 'yes')
     except (EOFError, KeyboardInterrupt):
         return False
 
@@ -255,9 +256,8 @@ def build_parser():
     parser.add_argument('--skip-bad-lines', action='store_true',
                         help='ignore unparsable link lines')
     parser.add_argument('-y', '--yes', action='store_true',
-                        help='auto-confirm cloud cleanup without prompting; only '
-                             'leftovers owned by this series are deleted, unknown '
-                             'items are kept')
+                        help='auto-confirm deletion of all Pack From Shared items, '
+                             'including items with unknown ownership')
     parser.add_argument('--log', default='auto', help="write a log file into each series' "
                                                      "progress directory (default), or '-' "
                                                      "to log to stdout only")

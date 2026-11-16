@@ -1575,7 +1575,7 @@ class TestRestorePlacement(unittest.TestCase):
         self.assertTrue(pipeline.reclaim_workspace(100))
         self.assertEqual(cloud.deleted, ['old'])
 
-    def test_yes_deletes_only_owned_leftovers_without_prompting(self):
+    def test_yes_deletes_all_pack_leftovers_without_prompting(self):
         from pikpakget.pipeline import Log, Pipeline
 
         class Cloud:
@@ -1585,6 +1585,8 @@ class TestRestorePlacement(unittest.TestCase):
                 self.deleted = []
 
             def list_folder(self, parent_id):
+                if parent_id != 'pack':
+                    raise AssertionError('cleanup must only inspect Pack From Shared')
                 return list(self.items)
 
             def cleanup(self, ids):
@@ -1601,10 +1603,11 @@ class TestRestorePlacement(unittest.TestCase):
         pipeline.space = lambda: {'usage': 150, 'free': 1000}
         pipeline.wait_space_freed = lambda size, before: None
         self.assertTrue(pipeline.reclaim_workspace(100))
-        self.assertEqual(cloud.deleted, ['mine'])
-        self.assertEqual([item['id'] for item in cloud.items], ['unknown'])
+        self.assertEqual(cloud.deleted, ['mine', 'unknown'])
+        self.assertEqual(cloud.items, [])
+        self.assertIsNone(record['restored_id'])
 
-    def test_yes_without_owned_leftovers_keeps_everything(self):
+    def test_yes_cleans_unknown_items_even_without_progress_records(self):
         from pikpakget.pipeline import Log, Pipeline
 
         class Cloud:
@@ -1615,12 +1618,15 @@ class TestRestorePlacement(unittest.TestCase):
                 return list(self.items)
 
             def cleanup(self, ids):
-                raise AssertionError('unknown items must not be deleted')
+                self.items = [item for item in self.items if item['id'] not in ids]
 
         args = argparse.Namespace(state_dir=tempfile.mkdtemp(), max_files=0, yes=True)
         pipeline = Pipeline(args, Log(quiet=True), client=Cloud(),
                             workspace_id='pack', account_id='account')
-        self.assertFalse(pipeline.reclaim_workspace(100))
+        pipeline.space = lambda: {'usage': 50, 'free': 1000}
+        pipeline.wait_space_freed = lambda *args: None
+        self.assertTrue(pipeline.reclaim_workspace(100))
+        self.assertEqual(pipeline.client.items, [])
 
 
 class TestLinkIdentity(unittest.TestCase):
