@@ -332,17 +332,30 @@ class Client:
         if not self.session.data.get('refresh_token'):
             self.session_dead = True
             raise PikPakError('会话没有 refresh_token，请重新登录', action='refresh')
-        status, body = self._raw('POST', f'{USER_API}/v1/auth/token', auth=False, json_body={
-            'client_id': CLIENT_ID, 'grant_type': 'refresh_token',
-            'refresh_token': self.session.data['refresh_token']}, headers=self._client_headers())
-        if status != 200 or not body.get('access_token'):
-            # only a refusal *of this credential* proves the session is dead: a 5xx is
-            # the auth endpoint being unhappy, and ending a multi-day run over that
-            # would be worse than retrying it. A socket that never got there proves
-            # nothing at all.
-            self.session_dead = status is not None and 400 <= status < 500
-            raise PikPakError(f'会话续期失败: {body.get("error_description") or body}（请重新登录）',
-                              status=status, action='refresh')
+        for attempt in range(len(NETWORK_RETRY_WAITS)):
+            if self.stop():
+                raise PikPakError('已中断（登录状态已保留）', action='refresh')
+            status, body = self._raw('POST', f'{USER_API}/v1/auth/token', auth=False, json_body={
+                'client_id': CLIENT_ID, 'grant_type': 'refresh_token',
+                'refresh_token': self.session.data['refresh_token']}, headers=self._client_headers())
+            if self.stop():
+                raise PikPakError('已中断（登录状态已保留）', action='refresh')
+            if status == 200 and body.get('access_token'):
+                break
+            self.session_dead = status in (400, 401, 403)
+            network = status is None
+            transient = network or status == 429 or (status is not None and status >= 500)
+            hint = '（请重新登录）' if self.session_dead else '（登录状态已保留）'
+            error = PikPakError(
+                f'会话续期失败: {body.get("error_description") or body}{hint}',
+                status=status, action='refresh', network=network,
+                throttled=status in (429, 503))
+            if not transient or attempt + 1 == len(NETWORK_RETRY_WAITS):
+                raise error
+            delay = NETWORK_RETRY_WAITS[attempt]
+            self.log(f'会话续期暂不可用：{body.get("error_description") or body}；'
+                     f'{delay}s 后重试（保留登录状态）', 'warn')
+            self._wait(delay)
         record = self._token_record(body)
         record['sub'] = record.get('sub') or self.session.user_id
         self.session.store(record)

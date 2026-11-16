@@ -461,6 +461,19 @@ class TestVerifyCache(RunLinkHarness):
 
 
 class TestNetworkBudget(RunLinkHarness):
+    def test_short_download_retains_partial_and_attempt_budget(self):
+        def short_stream(url, target, expected=0, resume=0, **kwargs):
+            with open(target, 'wb') as handle:
+                handle.write(b'x' * (expected - 1))
+            return expected - 1
+
+        self.fake_stream = short_stream
+        status, _ = self.run_one(size=100)
+        self.assertEqual(status, 'retry')
+        record = self.pipeline.state.file('SHAREFILE1')
+        self.assertEqual(record['attempts'], 0)
+        self.assertEqual(os.path.getsize(record['local'] + '.part'), 99)
+
     def test_network_failure_does_not_consume_file_attempts(self):
         from pikpakget.api import PikPakError
         self.pipeline.reuse_or_restore = lambda *a, **k: (_ for _ in ()).throw(
@@ -2880,6 +2893,7 @@ class TestRefreshFailureIsNotAlwaysFatal(unittest.TestCase):
                              device_id_path=os.path.join(dirpath, 'device_id'))
         self.client.session.store({'access_token': 'a' * 40, 'refresh_token': 'r',
                                    'sub': 'u', 'expires_at': time.time() + 3600})
+        self.client._wait = lambda seconds: None
 
     def answer(self, result):
         self.client._raw = lambda *args, **kwargs: result

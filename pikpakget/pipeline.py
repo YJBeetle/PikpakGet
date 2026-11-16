@@ -799,7 +799,7 @@ class Pipeline:
         written = download_stream(url, part, expected, resume, stop=self.stop,
                                   on_progress=on_progress)
         if expected and written != expected:
-            raise PikPakError(f'下载不完整 {written}/{expected}')
+            raise PikPakError(f'下载不完整 {written}/{expected}', network=written < expected)
         return part, 'transfer-ready'
 
     def discard_partial(self, final):
@@ -1269,8 +1269,14 @@ class Pipeline:
             if self.stop():
                 self.log(f'第 {pass_number} 轮已中断；进度已保存')
                 return 1
-            self.log(f'第 {pass_number} 轮结束：{dict(tally)} | '
-                     f'云盘占用 {human(self.space()["usage"])}')
+            try:
+                quota_note = f'云盘占用 {human(self.space()["usage"])}'
+            except PikPakError as error:
+                if not error.network:
+                    raise
+                quota_note = '云盘用量暂不可读（网络异常，进度已保留）'
+                self.log(f'查询轮末云盘用量失败：{error}', 'warn')
+            self.log(f'第 {pass_number} 轮结束：{dict(tally)} | {quota_note}')
             if tally.get('throttled'):
                 return 4 if self.traffic_capped else 1
             if self.stop():
