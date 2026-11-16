@@ -86,7 +86,7 @@ class TestAccountRotation(unittest.TestCase):
     def test_cloud_cleanup_defaults_to_no(self):
         items = [{'id': 'old', 'name': 'old.mp4'}]
         with mock.patch.object(cli.sys.stdin, 'isatty', return_value=True), \
-                mock.patch('builtins.input') as answer:
+                mock.patch.object(cli, '_ask_line') as answer:
             for value, expected in [('y', True), ('Y', True), ('', False),
                                     ('n', False), ('删除', False)]:
                 answer.return_value = value
@@ -94,7 +94,18 @@ class TestAccountRotation(unittest.TestCase):
                     items, set(), 'account', lambda *args: None), expected)
             self.assertIn('[y/N]', answer.call_args.args[0])
         with mock.patch.object(cli.sys.stdin, 'isatty', return_value=False), \
-                mock.patch('builtins.input', side_effect=AssertionError('must not prompt')):
+                mock.patch.object(cli, '_ask_line',
+                                  side_effect=AssertionError('must not prompt')):
+            self.assertFalse(cli._confirm_cloud_cleanup(
+                items, set(), 'account', lambda *args: None))
+
+    def test_cleanup_prompt_aborts_when_interrupted(self):
+        import contextlib
+        import io
+        items = [{'id': 'old', 'name': 'old.mp4'}]
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(cli.sys.stdin, 'isatty', return_value=True), \
+                mock.patch.object(cli, 'STOP', True):
             self.assertFalse(cli._confirm_cloud_cleanup(
                 items, set(), 'account', lambda *args: None))
 

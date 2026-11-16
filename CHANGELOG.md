@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Ctrl+C now abandons the cloud-cleanup prompt promptly: the blocking read kept waiting after the stop handler set its flag, so the prompt looked stuck until Enter or a second interrupt.
+
 - Add `-y/--yes` to skip the cloud-cleanup prompt for unattended runs; it deletes only leftovers owned by this series' records and keeps unknown items with a warning. The old `--yes` (ignore unparsable link lines) is renamed `--skip-bad-lines`.
 
 - Condense per-file success output to one completion line with duration, average speed and hash piece; stage messages move to debug behind a new `-v` flag (replacing `PIKPAKGET_DEBUG`). Adopted local files are counted per link instead of one line each, routine quota waits go to debug (reported past 30s or on timeout), and terminal-mode log files get a plain progress line every 5 minutes.

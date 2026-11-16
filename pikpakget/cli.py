@@ -5,6 +5,7 @@ import getpass
 import json
 import math
 import os
+import select
 import signal
 import sys
 import time
@@ -24,6 +25,24 @@ except ImportError:                                # Windows: no POSIX locks
 STOP = False
 
 
+def _ask_line(prompt):
+    """`input()` that also ends when a stop was requested.
+
+    The stop handler only sets a flag, and the interrupted blocking read is
+    retried (PEP 475), so a plain `input()` would keep waiting at the prompt
+    after Ctrl+C."""
+    print(prompt, end='', flush=True)
+    while not STOP:
+        if not select.select([sys.stdin], [], [], 0.2)[0]:
+            continue
+        line = sys.stdin.readline()
+        if not line:
+            raise EOFError
+        return line.rstrip('\n')
+    print()
+    raise KeyboardInterrupt
+
+
 def _confirm_cloud_cleanup(items, owned_ids, label, log):
     log(f'账号 {label} 的 Pack From Shared 中有 {len(items)} 项可清理：', 'warn')
     for item in items[:10]:
@@ -35,7 +54,7 @@ def _confirm_cloud_cleanup(items, owned_ids, label, log):
         log('当前没有交互终端，未清理；需要清理时请在交互式终端重跑', 'warn')
         return False
     try:
-        return input('永久删除上述 Pack From Shared 项目及其内容？[y/N] ').strip().lower() == 'y'
+        return _ask_line('永久删除上述 Pack From Shared 项目及其内容？[y/N] ').strip().lower() == 'y'
     except (EOFError, KeyboardInterrupt):
         return False
 
