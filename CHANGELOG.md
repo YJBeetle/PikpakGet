@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Keep single-stream filesystem open, write and flush failures separate from network errors, preserving the disk error and normal attempt accounting.
+
 - Interrupt segmented retry backoff and lane launch delays promptly on Ctrl+C, without starting another transfer after the stop request.
 
 - Wait for every segment writer to finish before retrying, merging or removing segment files. Propagate disk write and flush errors to the download pipeline instead of treating them as stalled transfers.

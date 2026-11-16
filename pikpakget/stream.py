@@ -311,27 +311,34 @@ def download_stream(url, target, expected_size=0, resume_from=0, timeout=STALL_S
         headers['Range'] = f'bytes={resume_from}-'
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            if resume_from and response.status != 206:
-                written = 0                       # the server restarted the range
-            started = time.time()
-            with open(target, 'ab' if written else 'wb') as handle:
-                while True:
-                    if stop():
-                        raise PikPakError('已中断（.part 已保留，重跑即续传）')
-                    block = response.read(CHUNK)
-                    if not block:
-                        break
-                    handle.write(block)
-                    written += len(block)
-                    if on_progress:
-                        on_progress(written, time.time() - started)
+        response = urllib.request.urlopen(request, timeout=timeout)
     except urllib.error.HTTPError as error:
         raise PikPakError(f'下载被拒: HTTP {error.code}', status=error.code,
                           throttled=error.code in (403, 429, 503)) from error
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise PikPakError(f'下载中断: {type(error).__name__} {error}',
                           network=True) from error
+    with response:
+        if resume_from and response.status != 206:
+            written = 0                       # the server restarted the range
+        started = time.time()
+        # Filesystem failures must reach the pipeline as OSError, not as a
+        # network failure that refunds the attempt and encourages more traffic.
+        with open(target, 'ab' if written else 'wb') as handle:
+            while True:
+                if stop():
+                    raise PikPakError('已中断（.part 已保留，重跑即续传）')
+                try:
+                    block = response.read(CHUNK)
+                except (urllib.error.URLError, TimeoutError, OSError) as error:
+                    raise PikPakError(f'下载中断: {type(error).__name__} {error}',
+                                      network=True) from error
+                if not block:
+                    break
+                handle.write(block)
+                written += len(block)
+                if on_progress:
+                    on_progress(written, time.time() - started)
     return written
 
 
