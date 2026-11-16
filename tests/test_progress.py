@@ -83,6 +83,22 @@ class TestProgress(unittest.TestCase):
         self.assertIn('0.0B/s', output.getvalue())
         self.assertIn('剩余 未知', output.getvalue())
 
+    def test_eta_uses_the_minute_average_not_the_recent_dip(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            log = Log()
+            log.is_terminal = True
+            with mock.patch('pikpakget.progress.time.monotonic', return_value=0):
+                progress = TransferProgress(log, 2200, 0)
+                progress.render(True)
+            for stamp, written in ((25, 550), (50, 1100), (55, 1100)):
+                progress.update(written)
+                with mock.patch('pikpakget.progress.time.monotonic', return_value=stamp):
+                    progress.render(True)
+        last = output.getvalue().splitlines()[-1]
+        self.assertIn('0.0B/s', last)          # the dip is shown honestly
+        self.assertIn('剩余 0分55秒', last)     # but ETA keeps the longer-window average
+
 
 if __name__ == '__main__':
     unittest.main()

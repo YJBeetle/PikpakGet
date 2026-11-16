@@ -85,7 +85,7 @@ See `python3 -m pikpakget --help` for all options.
 
 `--skip-ext` applies at listing time: `--dry-run`, `--inventory`, `--verify` audits, and downloads all plan against the filtered list. Skipped files use no `--max-files` slot and do not keep a link unfinished. Existing local files with a skipped extension are left untouched.
 
-In a terminal, downloads show a single-file progress bar with bytes, recent speed, and estimated time remaining, refreshed every second. Restore, verification, cloud cleanup, and quota waits have separate messages. Redirected output uses plain progress lines about every 30 seconds instead; `--quiet` hides progress. Log files contain no terminal redraw codes.
+In a terminal, downloads show a single-file progress bar with bytes, recent speed, and estimated time remaining, refreshed every second. Speed reflects the last few seconds of throughput; the ETA uses the last minute's average speed, so brief dips do not double the remaining time. Restore, verification, cloud cleanup, and quota waits have separate messages. Redirected output uses plain progress lines about every 30 seconds instead; `--quiet` hides progress. Log files contain no terminal redraw codes.
 
 ## Progress and accounts
 

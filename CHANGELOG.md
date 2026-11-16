@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Smooth the download ETA over a 60-second average-speed window while the displayed speed keeps the recent-seconds window, so brief throughput dips no longer double the remaining time.
+
 - Decode the obfuscated folder ids carried by share URL paths (XOR against the share id, mirroring the web app) before listing the subtree; the raw path ids previously failed with 404.
 
 - Ctrl+C now ends network back-off waits and in-flight API requests promptly: the retry ladder and restore polling observe the stop flag, and each request has a 120s total wall-clock deadline, so a drip-feeding connection can no longer stall a run for minutes.

@@ -3,6 +3,9 @@ import threading
 import time
 from collections import deque
 
+SPEED_WINDOW = 5      # displayed speed: the recent seconds, honestly
+ETA_WINDOW = 60       # ETA: last-minute average, so a brief dip cannot double it
+
 
 class TransferProgress:
     def __init__(self, log, total, initial=0):
@@ -26,12 +29,16 @@ class TransferProgress:
             return
         self.last = now
         self.samples.append((now, self.current))
-        while len(self.samples) > 2 and self.samples[1][0] <= now - 5:
+        while len(self.samples) > 2 and self.samples[1][0] <= now - ETA_WINDOW:
             self.samples.popleft()
         since, before = self.samples[0]
-        speed = max(self.current - before, 0) / max(now - since, 0.001)
+        eta_speed = max(self.current - before, 0) / max(now - since, 0.001)
+        recent_since, recent_before = next(
+            (sample for sample in self.samples if sample[0] >= now - SPEED_WINDOW),
+            self.samples[0])
+        speed = max(self.current - recent_before, 0) / max(now - recent_since, 0.001)
         fraction = min(self.current / self.total, 1) if self.total else 0
-        eta = max(self.total - self.current, 0) / speed if speed else None
+        eta = max(self.total - self.current, 0) / eta_speed if eta_speed else None
         remaining = f'{int(eta) // 60}分{int(eta) % 60:02d}秒' if eta is not None else '未知'
         bar = '#' * int(fraction * 20) + '-' * (20 - int(fraction * 20))
         message = (f'下载 [{bar}] {fraction:5.1%} '
