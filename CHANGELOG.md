@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Interrupt segmented retry backoff and lane launch delays promptly on Ctrl+C, without starting another transfer after the stop request.
+
 - Wait for every segment writer to finish before retrying, merging or removing segment files. Propagate disk write and flush errors to the download pipeline instead of treating them as stalled transfers.
 
 - Segmented downloads pipe curl's ~16 KiB output through a 1 MiB reader thread, so the destination volume sees the same write size as the single-stream path (recordsize alignment on ZFS).
