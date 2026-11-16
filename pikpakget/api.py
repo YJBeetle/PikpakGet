@@ -82,14 +82,16 @@ TRAFFIC_CAP = re.compile(r'downstream traffic|has exceeded the limit', re.I)
 
 class PikPakError(RuntimeError):
     """An API failure, with enough detail for the caller to tell a bad link apart
-    from a rate limit and from a dead session."""
+    from a rate limit, a dead session and a transport failure."""
 
-    def __init__(self, message, status=None, code=None, action=None, throttled=False):
+    def __init__(self, message, status=None, code=None, action=None, throttled=False,
+                 network=False):
         super().__init__(message)
         self.status = status
         self.code = code
         self.action = action
         self.throttled = throttled
+        self.network = network
 
     def __str__(self):
         # a local failure (no session, nothing sent) should not claim an HTTP status
@@ -449,7 +451,7 @@ class Client:
                     error_type = (RestoreOutcomeUnknown if path == '/v1/share/restore'
                                   else PikPakError)
                     raise error_type(f'网络请求结果未知，可能已生效: {problem[:160]}',
-                                     action=action)
+                                     action=action, network=True)
                 wait = NETWORK_RETRY_WAITS[min(attempt, len(NETWORK_RETRY_WAITS) - 1)]
                 self.log(f'网络抖动（{problem[:70]}），{wait}s 后重试', 'warn')
                 self._wait(wait)
@@ -472,8 +474,10 @@ class Client:
                 continue
             raise PikPakError(problem, status=status, code=body.get('error_code'),
                               action=action, throttled=throttled)
+        network = last.get('status') is None
         raise PikPakError(str(last.get('error_description') or '重试后仍失败'),
-                          status=last.get('status'), action=action, throttled=True)
+                          status=last.get('status'), action=action,
+                          throttled=not network, network=network)
 
     def _wait(self, seconds):
         """Back-off that Ctrl+C ends promptly instead of after the full wait."""

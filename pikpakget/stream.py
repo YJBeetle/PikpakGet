@@ -287,7 +287,8 @@ def download_stream(url, target, expected_size=0, resume_from=0, timeout=STALL_S
         raise PikPakError(f'下载被拒: HTTP {error.code}', status=error.code,
                           throttled=error.code in (403, 429, 503)) from error
     except (urllib.error.URLError, TimeoutError, OSError) as error:
-        raise PikPakError(f'下载中断: {type(error).__name__} {error}') from error
+        raise PikPakError(f'下载中断: {type(error).__name__} {error}',
+                          network=True) from error
     return written
 
 

@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Network-level failures no longer consume a file's attempt budget or count toward the rate-limit stop: exhausting the transport retry ladder (or a dropped download stream) is marked as network, so a long outage leaves the file retryable instead of permanently failing it.
+
 - Ctrl+C now abandons the cloud-cleanup prompt promptly: the blocking read kept waiting after the stop handler set its flag, so the prompt looked stuck until Enter or a second interrupt.
 
 - Add `-y/--yes` to skip the cloud-cleanup prompt for unattended runs; it deletes only leftovers owned by this series' records and keeps unknown items with a warning. The old `--yes` (ignore unparsable link lines) is renamed `--skip-bad-lines`.

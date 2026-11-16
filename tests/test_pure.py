@@ -211,6 +211,19 @@ class TestSegments(unittest.TestCase):
         plan = self.plan(2, 8)
         self.assertEqual(sum(item['want'] for item in plan), 2)
 
+    def test_a_dropped_download_stream_is_marked_network(self):
+        import urllib.error
+        import urllib.request
+        from pikpakget.api import PikPakError
+        import pikpakget.stream as stream
+        original = urllib.request.urlopen
+        urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(
+            urllib.error.URLError('SSL EOF'))
+        self.addCleanup(setattr, urllib.request, 'urlopen', original)
+        with self.assertRaises(PikPakError) as caught:
+            stream.download_stream('http://host/file', os.path.join(self.dir, 'x.part'))
+        self.assertTrue(caught.exception.network)
+
 
 class RunLinkHarness(unittest.TestCase):
     """Drives the real run_link loop with the network and the cloud-side cleanup
@@ -400,6 +413,26 @@ class TestInterruptibleClient(RunLinkHarness):
         self.pipeline.client.restore = lambda *a, **k: {}
         with self.assertRaisesRegex(PikPakError, '已中断'):
             self.pipeline.restore_one({'share_id': 'S'}, {'id': 'F', 'size': 1}, {}, 'T')
+
+
+class TestNetworkBudget(RunLinkHarness):
+    def test_network_failure_does_not_consume_file_attempts(self):
+        from pikpakget.api import PikPakError
+        self.pipeline.reuse_or_restore = lambda *a, **k: (_ for _ in ()).throw(
+            PikPakError('网络请求结果未知', network=True))
+        status, _ = self.run_one(size=100)
+        self.assertEqual(status, 'retry')
+        record = self.pipeline.state.file('SHAREFILE1')
+        self.assertEqual(record['attempts'], 0, 'a long outage must not fail the file')
+        self.assertEqual(record['state'], 'retry')
+
+    def test_logic_failure_still_consumes_attempts(self):
+        from pikpakget.api import PikPakError
+        self.pipeline.reuse_or_restore = lambda *a, **k: (_ for _ in ()).throw(
+            PikPakError('转存被拒: FAILED'))
+        status, _ = self.run_one(size=100)
+        self.assertEqual(status, 'retry')
+        self.assertEqual(self.pipeline.state.file('SHAREFILE1')['attempts'], 1)
 
 
 class TestCondensedOutput(RunLinkHarness):
@@ -2362,9 +2395,11 @@ class TestTransientNetworkRetry(unittest.TestCase):
         import pikpakget.api as api
         self.feed([(None, {'error_description': 'URLError: SSL EOF'})] * 5)
         self.waits()
-        with self.assertRaises(api.PikPakError):
+        with self.assertRaises(api.PikPakError) as caught:
             self.client.about()
         self.assertEqual(sum(self.slept), 5 + 15 + 45 + 120 + 240)
+        self.assertTrue(caught.exception.network, 'transport failures are marked network')
+        self.assertFalse(caught.exception.throttled, 'a dead link is not a rate limit')
 
     def test_a_permanent_error_is_not_retried(self):
         self.feed([(404, {'error_description': 'share not found'})])

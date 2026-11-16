@@ -1151,6 +1151,7 @@ class Pipeline:
                          '云端已清理')
             except (PikPakError, OSError) as error:
                 if isinstance(error, RestoreOutcomeUnknown):
+                    record['attempts'] = max(record['attempts'] - 1, 0)
                     record['state'] = 'retry'
                     record['error'] = str(error)[:300]
                     self.state.save()
@@ -1169,6 +1170,10 @@ class Pipeline:
                     record['attempts'] = max(record['attempts'] - 1, 0)
                     record['state'] = 'pending'
                 else:
+                    if getattr(error, 'network', False):
+                        # a flaky link is not this file's fault either: refund the
+                        # attempt so a long outage cannot permanently fail a file
+                        record['attempts'] = max(record['attempts'] - 1, 0)
                     record['state'] = 'failed' if record['attempts'] >= MAX_ATTEMPTS else 'retry'
                 record['error'] = str(error)[:300]
                 link['status'] = 'partial'
