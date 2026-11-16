@@ -239,6 +239,8 @@ def build_parser():
                                                      "to log to stdout only")
     parser.add_argument('--version', action='store_true', help='print version and exit')
     parser.add_argument('--quiet', action='store_true')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='show debug-level stage detail (restore, verify, cleanup)')
     return parser
 
 
@@ -294,7 +296,7 @@ def main(argv=None):
         print('单实例锁依赖 POSIX 的 fcntl，Windows 上不支持：请在 WSL 或 Linux/macOS 里运行',
               file=sys.stderr)
         return 2
-    log = Log(quiet=args.quiet)
+    log = Log(quiet=args.quiet, verbose=args.verbose)
     try:
         return _commands(args, log)
     finally:
@@ -400,7 +402,8 @@ def _commands(args, log):
                     continue
                 if args.log != '-':
                     series_log = Log(os.path.join(selected.state_dir,
-                                     f'grab-{time.strftime("%Y-%m-%d")}.log'), args.quiet)
+                                     f'grab-{time.strftime("%Y-%m-%d")}.log'),
+                                     args.quiet, verbose=args.verbose)
             try:
                 code, done = _run_group(selected, series_log, registry, group)
             finally:

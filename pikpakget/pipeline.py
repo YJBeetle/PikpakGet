@@ -32,6 +32,7 @@ SPACE_HEADROOM = 400_000_000          # keep this much cloud space free
 LOCAL_HEADROOM = 20_000_000_000       # ... and this much on the target volume
 POLL_INTERVAL = 4
 POLL_TIMEOUT = 1800
+LOG_PROGRESS_INTERVAL = 300           # plain progress line into the log file, terminal mode
 MAX_ATTEMPTS = 3
 QUARANTINE_SUFFIX = '.unverified'     # bytes we keep but cannot vouch for
 THROTTLE_STOP = 3                     # consecutive refusals before giving up
@@ -207,11 +208,13 @@ def parse_skip_ext(text):
 
 
 class Log:
-    def __init__(self, path=None, quiet=False):
+    def __init__(self, path=None, quiet=False, verbose=False):
         self.quiet = quiet
+        self.verbose = verbose
         self.handle = None
         self.is_terminal = sys.stdout.isatty()
         self._transfer_visible = False
+        self._last_sparse = 0.0
         self._output_lock = threading.RLock()
         if path:
             os.makedirs(os.path.dirname(path) or '.', mode=0o700, exist_ok=True)
@@ -255,21 +258,27 @@ class Log:
                     visible.append(char)
                 print('\r\033[2K' + ''.join(visible), end='', flush=True)
                 self._transfer_visible = True
+                now = time.monotonic()
+                if now - self._last_sparse >= LOG_PROGRESS_INTERVAL:
+                    self._last_sparse = now
+                    self._file_line(message)
             else:
                 self._write(message)
 
-    def _write(self, message, level='info'):
-        stamp = time.strftime('%H:%M:%S')
-        debug_on = os.environ.get('PIKPAKGET_DEBUG')
-        if level == 'debug' and not debug_on:
-            return
-        # --quiet still surfaces warnings, otherwise a stalled run looks healthy
-        if not (self.quiet and level not in ('warn', 'error')):
-            print(f'{stamp} {level.upper()[:4]} {message}', flush=True)
+    def _file_line(self, message, level='info'):
         if self.handle:
             self.handle.write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} '
                               f'{level.upper()[:4]} {message}\n')
             self.handle.flush()
+
+    def _write(self, message, level='info'):
+        stamp = time.strftime('%H:%M:%S')
+        if level == 'debug' and not self.verbose:
+            return
+        # --quiet still surfaces warnings, otherwise a stalled run looks healthy
+        if not (self.quiet and level not in ('warn', 'error')):
+            print(f'{stamp} {level.upper()[:4]} {message}', flush=True)
+        self._file_line(message, level)
 
 
 class State:
@@ -453,15 +462,20 @@ class Pipeline:
         # landing exactly, and waiting it out costs 150s per file for nothing
         tolerance = max(expect_drop * 0.02, 2_000_000)
         deadline = time.time() + timeout
+        started = time.monotonic()
         waiting_reported = False
         while time.time() < deadline:
             if self.stop():
                 return None
             space = self.space()
             if space['usage'] <= floor + tolerance:
+                elapsed = time.monotonic() - started
+                if elapsed > 30:
+                    self.log(f'等待空间释放用了 {int(elapsed)}s')
                 return space
             if not waiting_reported:
-                self.log(f'等待空间释放：云端占用 {human(space["usage"])}，最多等待 {timeout}s')
+                self.log(f'等待空间释放：云端占用 {human(space["usage"])}，最多等待 {timeout}s',
+                         'debug')
                 waiting_reported = True
             time.sleep(POLL_INTERVAL)
         space = self.space()
@@ -872,7 +886,7 @@ class Pipeline:
         evidence of damage."""
         expected = (node or {}).get('hash')
         if expected:
-            self.log('校验中：正在核对下载文件的内容 hash')
+            self.log('校验中：正在核对下载文件的内容 hash', 'debug')
             piece = verify_content(part, expected, self.hash_sizes(record))
             if piece is None:
                 reason = f'云端 {expected[:16]}… 无候选分片命中'
@@ -883,7 +897,7 @@ class Pipeline:
             if record is not None:
                 record['hash_piece'] = piece
             self.hash_hint = piece
-            self.log(f'内容 hash 已核对（{piece >> 10} KiB 分片）')
+            self.log(f'内容 hash 已核对（{piece >> 10} KiB 分片）', 'debug')
         os.replace(part, final)
         return final, 'downloaded'
 
@@ -893,7 +907,7 @@ class Pipeline:
         if not mine or self.args.no_delete:
             return
         before = self.space()['usage'] if not self.stop() else None
-        self.log('清理云端：正在删除已下载的副本')
+        self.log('清理云端：正在删除已下载的副本', 'debug')
         self.client.cleanup(mine)
         self.created.difference_update(mine)
         if not self.stop():
@@ -969,6 +983,7 @@ class Pipeline:
             self.state.save()
             self.log(link['error'], 'error')
             return 'error'
+        adopted = 0
         for position, node in enumerate(files, 1):
             if self.stop() or self.files_left <= 0:
                 link['status'] = 'partial'
@@ -1019,6 +1034,7 @@ class Pipeline:
                 record['attempts'] = 0
                 record['local'] = record.get('home') or record.get('local')
             if self.existing_matches(planned_local, node, record):
+                adopted += 1
                 if record['state'] == 'done':
                     continue
                 self.forget([record.get('restored_id')], node['size'])
@@ -1027,7 +1043,7 @@ class Pipeline:
                 record['state'] = 'done'
                 record['error'] = None
                 self.state.save()
-                self.log(f'已识别本地文件，跳过下载：{node["path"][:70]}')
+                self.log(f'已识别本地文件，跳过下载：{node["path"][:70]}', 'debug')
                 continue
             if record['state'] in ('done', 'downloaded'):
                 record['state'] = 'pending'
@@ -1086,9 +1102,9 @@ class Pipeline:
                 record['state'] = 'restoring'
                 record['attempts'] += 1
                 self.state.save()
-                self.log('转存中：正在准备云端副本')
+                self.log('转存中：正在准备云端副本', 'debug')
                 restored = self.reuse_or_restore(job, node, record, report['token'])
-                self.log('等待云端文件就绪')
+                self.log('等待云端文件就绪', 'debug')
                 self.wait_ready(restored, node['size'])
                 if self.stop():
                     raise PikPakError('已中断（云端副本与本地进度已保留）')
@@ -1115,7 +1131,13 @@ class Pipeline:
                 self.files_done += 1
                 self.bytes_done += node['size']
                 self.throttle_hits = 0      # the counter means *consecutive*
-                self.log(f'    {how}，云端已清理 -> {os.path.basename(local)[:56]}')
+                secs = record.get('seconds') or 0
+                detail = f'，均速 {human(node["size"] / secs)}/s' if secs else ''
+                piece = record.get('hash_piece')
+                if piece:
+                    detail += f'，{piece >> 10} KiB 分片核对'
+                self.log(f'    完成（{int(secs) // 60}分{int(secs) % 60:02d}秒{detail}），'
+                         '云端已清理')
             except (PikPakError, OSError) as error:
                 if isinstance(error, RestoreOutcomeUnknown):
                     record['state'] = 'retry'
@@ -1150,6 +1172,8 @@ class Pipeline:
                 if record['state'] == 'failed':
                     continue
                 return 'retry'
+        if adopted:
+            self.log(f'{job["folder"]}: 已识别 {adopted} 个本地文件，跳过下载')
         # decided from the ids this listing produced, not from the url field on the
         # records: a key format change must never be able to hide unfinished work
         pending = [node_id for node_id in (item['id'] for item in files)

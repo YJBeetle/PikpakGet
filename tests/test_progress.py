@@ -83,6 +83,33 @@ class TestProgress(unittest.TestCase):
         self.assertIn('0.0B/s', output.getvalue())
         self.assertIn('剩余 未知', output.getvalue())
 
+    def test_verbose_gates_debug_lines(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            log = Log()
+            log('阶段细节', 'debug')
+            self.assertEqual(output.getvalue(), '')
+            log.verbose = True
+            log('阶段细节', 'debug')
+        self.assertIn('阶段细节', output.getvalue())
+
+    def test_terminal_mode_logs_sparse_plain_progress(self):
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(output):
+            path = os.path.join(root, 'run.log')
+            log = Log(path)
+            log.is_terminal = True
+            for stamp, message in ((1000, '下载 10%'), (1100, '下载 20%'),
+                                   (1400, '下载 30%')):
+                with mock.patch('pikpakget.pipeline.time.monotonic', return_value=stamp):
+                    log.transfer(message)
+            log.close()
+            with open(path) as handle:
+                saved = handle.read()
+            self.assertEqual(saved.count('下载 '), 2)
+            self.assertNotIn('\033', saved)
+            self.assertEqual(output.getvalue().count('\r\033[2K'), 3)
+
     def test_eta_uses_the_minute_average_not_the_recent_dip(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

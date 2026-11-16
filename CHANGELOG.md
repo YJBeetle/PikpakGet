@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Condense per-file success output to one completion line with duration, average speed and hash piece; stage messages move to debug behind a new `-v` flag (replacing `PIKPAKGET_DEBUG`). Adopted local files are counted per link instead of one line each, routine quota waits go to debug (reported past 30s or on timeout), and terminal-mode log files get a plain progress line every 5 minutes.
+
 - Smooth the download ETA over a 60-second average-speed window while the displayed speed keeps the recent-seconds window, so brief throughput dips no longer double the remaining time.
 
 - Decode the obfuscated folder ids carried by share URL paths (XOR against the share id, mirroring the web app) before listing the subtree; the raw path ids previously failed with 404.

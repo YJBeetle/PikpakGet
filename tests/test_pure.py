@@ -402,6 +402,48 @@ class TestInterruptibleClient(RunLinkHarness):
             self.pipeline.restore_one({'share_id': 'S'}, {'id': 'F', 'size': 1}, {}, 'T')
 
 
+class TestCondensedOutput(RunLinkHarness):
+    def run_logged(self, **kwargs):
+        import contextlib
+        import io
+        from pikpakget.pipeline import Log
+        self.pipeline.log = Log()
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            status, node = self.run_one(**kwargs)
+        return status, buffer.getvalue()
+
+    def test_success_logs_one_completion_line_without_stages(self):
+        status, out = self.run_logged(size=100, digest=fold(b'\0' * 100, 1 << 20))
+        self.assertEqual(status, 'ok')
+        self.assertIn('完成（', out)
+        self.assertIn('1024 KiB 分片核对', out)
+        self.assertNotIn('转存中', out)
+        self.assertNotIn('校验中', out)
+        self.assertNotIn('清理云端', out)
+
+    def test_verbose_restores_stage_lines(self):
+        import contextlib
+        import io
+        from pikpakget.pipeline import Log
+        self.pipeline.log = Log(verbose=True)
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            status, _ = self.run_one(size=100, digest=fold(b'\0' * 100, 1 << 20))
+        self.assertEqual(status, 'ok')
+        self.assertIn('转存中', buffer.getvalue())
+        self.assertIn('内容 hash 已核对', buffer.getvalue())
+
+    def test_adopted_files_are_counted_not_listed(self):
+        os.makedirs(os.path.join(self.lib, 'Series'), exist_ok=True)
+        with open(os.path.join(self.lib, 'Series', 'a.mp4'), 'wb') as handle:
+            handle.truncate(100)
+        status, out = self.run_logged(size=100)
+        self.assertEqual(status, 'ok')
+        self.assertIn('已识别 1 个本地文件，跳过下载', out)
+        self.assertNotIn('已识别本地文件，跳过下载：', out)
+
+
 class TestSkipExt(RunLinkHarness):
     def walk(self, nodes):
         self.pipeline.client.walk_share = lambda share_id, pass_code, **kwargs: {
