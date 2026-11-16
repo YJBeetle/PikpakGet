@@ -415,6 +415,51 @@ class TestInterruptibleClient(RunLinkHarness):
             self.pipeline.restore_one({'share_id': 'S'}, {'id': 'F', 'size': 1}, {}, 'T')
 
 
+class TestVerifyCache(RunLinkHarness):
+    def prepare(self):
+        self.pipeline.args.verify = True
+        path = os.path.join(self.lib, 'Series', 'a.mp4')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'wb') as handle:
+            handle.truncate(100)
+        node = {'id': 'F', 'name': 'a.mp4', 'size': 100, 'path': 'a.mp4', 'hash': 'ABC'}
+        return path, node
+
+    def test_an_unchanged_file_skips_the_rehash(self):
+        path, node = self.prepare()
+        record = {'verified_hash': 'ABC', 'verified_mtime': os.stat(path).st_mtime_ns,
+                  'hash_piece': 1 << 20}
+        original = self.module.verify_content
+        self.module.verify_content = lambda *a, **k: self.fail('must reuse the cache')
+        self.addCleanup(setattr, self.module, 'verify_content', original)
+        self.assertTrue(self.pipeline.existing_matches(path, node, record))
+
+    def test_a_changed_mtime_rehashes_and_updates_the_cache(self):
+        path, node = self.prepare()
+        record = {'verified_hash': 'ABC', 'verified_mtime': 1, 'hash_piece': 1 << 20}
+        calls = []
+
+        def fake(path, expected, pieces):
+            calls.append(expected)
+            return 1 << 20
+
+        original = self.module.verify_content
+        self.module.verify_content = fake
+        self.addCleanup(setattr, self.module, 'verify_content', original)
+        self.assertTrue(self.pipeline.existing_matches(path, node, record))
+        self.assertEqual(calls, ['ABC'])
+        self.assertEqual(record['verified_mtime'], os.stat(path).st_mtime_ns)
+
+    def test_a_fresh_download_records_the_verified_mtime(self):
+        digest = fold(b'\0' * 100, 1 << 20)
+        status, _ = self.run_one(size=100, digest=digest)
+        self.assertEqual(status, 'ok')
+        record = self.pipeline.state.file('SHAREFILE1')
+        final = os.path.join(self.lib, 'Series', 'a.mp4')
+        self.assertEqual(record['verified_hash'], digest)
+        self.assertEqual(record['verified_mtime'], os.stat(final).st_mtime_ns)
+
+
 class TestNetworkBudget(RunLinkHarness):
     def test_network_failure_does_not_consume_file_attempts(self):
         from pikpakget.api import PikPakError

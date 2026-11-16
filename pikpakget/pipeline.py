@@ -347,7 +347,8 @@ class State:
             'state': 'pending', 'attempts': 0, 'link_key': link_key, 'restored_id': None,
             'source_id': file_id,
             'local': None, 'home': None, 'quarantined': None,
-            'size': 0, 'seconds': None, 'error': None})
+            'size': 0, 'seconds': None, 'error': None,
+            'verified_hash': None, 'verified_mtime': None})
 
     def files_of(self, link_key):
         return [rec for rec in self.data['files'].values() if rec.get('link_key') == link_key]
@@ -823,7 +824,8 @@ class Pipeline:
             self.log(f'没有可信进度，已删除旧下载片段：{os.path.basename(final)[:56]}', 'warn')
 
     def existing_matches(self, path, node, record=None):
-        """Adopt by path and size; --verify also checks a reported content hash."""
+        """Adopt by path and size; --verify also checks a reported content hash,
+        reusing the last verification while source hash, size and mtime all agree."""
         if os.path.islink(path) or size_on_disk(path) != node['size']:
             return False
         if not getattr(self.args, 'verify', False):
@@ -832,12 +834,22 @@ class Pipeline:
         if not expected:
             self.log(f'云端未提供 hash，按路径和大小确认：{node["path"][:70]}', 'warn')
             return True
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except OSError:
+            return False
+        if (record is not None and record.get('verified_hash') == expected
+                and record.get('verified_mtime') == mtime and record.get('hash_piece')):
+            self.log(f'已有文件上次核对后未变化，跳过重算：{node["path"][:70]}', 'debug')
+            return True
         piece = verify_content(path, expected, self.hash_sizes(record))
         if piece is None:
             self.log(f'已有文件内容 hash 不符：{node["path"][:70]}', 'warn')
             return False
         if record is not None:
             record['hash_piece'] = piece
+            record['verified_hash'] = expected
+            record['verified_mtime'] = mtime
         self.log(f'已有文件内容 hash 已核对：{node["path"][:70]}')
         return True
 
@@ -872,7 +884,9 @@ class Pipeline:
         os.replace(path, doomed)
         if record is not None:
             record.update({'state': 'unverified', 'local': doomed, 'home': home,
-                           'quarantined': doomed, 'hash_piece': None, 'error': reason[:300]})
+                           'quarantined': doomed, 'hash_piece': None,
+                           'verified_hash': None, 'verified_mtime': None,
+                           'error': reason[:300]})
         self.log(f'内容核对不过（{reason}），字节保留为 {os.path.basename(doomed)}', 'error')
         return doomed
 
@@ -900,6 +914,12 @@ class Pipeline:
             self.hash_hint = piece
             self.log(f'内容 hash 已核对（{piece >> 10} KiB 分片）', 'debug')
         os.replace(part, final)
+        if expected and record is not None:
+            try:
+                record['verified_hash'] = expected
+                record['verified_mtime'] = os.stat(final).st_mtime_ns
+            except OSError:
+                pass
         return final, 'downloaded'
 
     def forget(self, ids, size=0):
@@ -1018,6 +1038,8 @@ class Pipeline:
                 record['local'] = planned_local
                 record['home'] = planned_local
                 record['quarantined'] = None
+                record['verified_hash'] = None
+                record['verified_mtime'] = None
             previous_hash = record.get('source_hash')
             changed_source = bool(previous_hash and node.get('hash')
                                   and previous_hash != node['hash'])
