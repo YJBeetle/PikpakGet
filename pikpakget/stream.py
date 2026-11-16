@@ -214,7 +214,10 @@ def reap(processes):
     segments end up longer than their range."""
     for process in processes:
         if process.poll() is None:
-            process.terminate()
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass  # a failed sink may terminate curl concurrently
     for process in processes:
         try:
             process.wait(timeout=15)
@@ -232,10 +235,33 @@ def _drain(process, path):
     try:
         with open(path, 'ab') as handle:
             shutil.copyfileobj(process.stdout, handle, CHUNK)
-    except OSError:
-        process.terminate()
+    except OSError as error:
+        process.sink_error = error
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass  # curl may already have exited while its pipe was being drained
     finally:
-        process.stdout.close()
+        try:
+            process.stdout.close()
+        except OSError as error:
+            if getattr(process, 'sink_error', None) is None:
+                process.sink_error = error
+
+
+def _finish_segment_processes(processes):
+    """Retire every producer and writer before files can be reused or removed."""
+    reap(processes)
+    for process in processes:
+        sink = getattr(process, 'sink', None)
+        if sink:
+            # A timeout would leave an old writer racing the next retry or cleanup.
+            # Filesystem writes cannot safely be cancelled from another thread.
+            sink.join()
+    for process in processes:
+        error = getattr(process, 'sink_error', None)
+        if error is not None:
+            raise error
 
 
 def _spawn(item, url):
@@ -244,6 +270,7 @@ def _spawn(item, url):
         return None
     process = subprocess.Popen(build_command(item, url), stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL)
+    process.sink_error = None
     process.sink = threading.Thread(target=_drain, args=(process, item['path']),
                                     daemon=True)
     process.sink.start()
@@ -351,19 +378,16 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
                     running.append((item, process))
             for item, process in running:
                 while process.poll() is None:
+                    for _, active in running:
+                        error = getattr(active, 'sink_error', None)
+                        if error is not None:
+                            raise error
                     report_progress()
                     if stop():
                         raise PikPakError('已中断（分段进度保留，重跑即续传）')
                     wait(2)
-        except PikPakError:
-            reap([process for _, process in running])
-            raise
         finally:
-            reap([process for _, process in running])
-            for _, process in running:
-                sink = getattr(process, 'sink', None)
-                if sink:
-                    sink.join(timeout=30)
+            _finish_segment_processes([process for _, process in running])
         wipe_overshot(plan, log)
         gained = sum(_segment_have(item) for item in plan)
         report_progress()

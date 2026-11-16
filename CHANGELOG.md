@@ -4,6 +4,8 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
+- Wait for every segment writer to finish before retrying, merging or removing segment files. Propagate disk write and flush errors to the download pipeline instead of treating them as stalled transfers.
+
 - Segmented downloads pipe curl's ~16 KiB output through a 1 MiB reader thread, so the destination volume sees the same write size as the single-stream path (recordsize alignment on ZFS).
 
 - With `--verify`, a file is not hashed again while its source hash, size and mtime all match the last successful check; freshly verified downloads record that state immediately, so repeated runs and passes stop re-reading the whole library.
