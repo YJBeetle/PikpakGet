@@ -202,7 +202,8 @@ def build_parser():
     parser.add_argument('--password-stdin', action='store_true',
                         help='read the password from stdin instead of a prompt')
     parser.add_argument('--logout', action='store_true', help='delete the stored session')
-    parser.add_argument('--accounts', action='store_true', help='list saved accounts in rotation order')
+    parser.add_argument('--accounts', action='store_true',
+                        help='list accounts in rotation order with local lock and traffic cooldown status')
     parser.add_argument('--account', help='use one account by label or ID; with --logout, remove it')
     parser.add_argument('--set-config', action='append', metavar='KEY=VALUE',
                         help='remember a setting in ~/.pikpakget/config.json and exit '
@@ -306,6 +307,35 @@ def _show_status(args, log):
     return 0
 
 
+def _show_accounts(registry):
+    now = time.time()
+    failed = False
+    for index, item in enumerate(registry.items, 1):
+        try:
+            usage = '使用中' if registry.is_in_use(item) else '空闲'
+        except PikPakError as error:
+            usage = f'未知（{error}）'
+            failed = True
+        try:
+            deadline = registry.traffic_retry_at(item)
+            if deadline > now:
+                remaining = math.ceil(deadline - now)
+                retry_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(deadline))
+                traffic = (f'冷却中，剩余 {remaining // 60}分{remaining % 60:02d}秒；'
+                           f'{retry_time} 后可重试')
+            else:
+                traffic = '可重试（冷却已到期）' if deadline else '未记录限流'
+        except (PikPakError, OverflowError, OSError, ValueError) as error:
+            traffic = f'未知（{error}）'
+            failed = True
+        print(f'{index}. {item["label"]}  {item["id"]} | 本机：{usage} | 流量：{traffic}')
+    if registry.items:
+        print('以上为本机锁和本地冷却记录；未检查登录有效性或剩余流量，冷却到期仅表示可重试。')
+    else:
+        print('尚无账号；先运行 --login')
+    return 1 if failed else 0
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.version:
@@ -353,11 +383,7 @@ def _commands(args, log):
             log(f'已保存账号 {item["label"]}（ID {item["id"]}）')
             return 0
         if args.accounts:
-            for index, item in enumerate(registry.items, 1):
-                print(f'{index}. {item["label"]}  {item["id"]}')
-            if not registry.items:
-                print('尚无账号；先运行 --login')
-            return 0
+            return _show_accounts(registry)
         if args.logout:
             if not registry.items:
                 raise PikPakError('没有已登录账号')

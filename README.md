@@ -57,7 +57,7 @@ The cloud staging folder is `Pack From Shared`. At the start of a download, the 
 
 | Command | Purpose |
 |---|---|
-| `python3 -m pikpakget --accounts` | List accounts in selection order |
+| `python3 -m pikpakget --accounts` | List accounts in selection order with local usage and traffic cooldown |
 | `python3 -m pikpakget --logout --account NAME` | Remove one account's local session and device ID |
 | `python3 -m pikpakget --whoami --account NAME` | Show drive usage and subscription expiry |
 | `python3 -m pikpakget links.txt --inventory` | Count files, total bytes, and files too large for the drive |
@@ -105,6 +105,8 @@ Each series keeps its progress, lock, and logs in `DIR/<series>/.pikpakget/`. On
 ```
 
 The account ID is derived from the server user ID. Signing in again to the same account keeps its device ID. Account locks only coordinate processes on the same computer; they cannot coordinate another computer using the same account or cloud folder.
+
+`--accounts` works offline while downloads are running. It shows whether the local account lock is held, plus any recorded traffic cooldown with its remaining duration and retry time. Expired cooldowns are shown as eligible for retry; unreadable states are shown as unknown without hiding other accounts. This is a local snapshot, not a login check or a measurement of remaining server traffic. Cooldown expiry does not guarantee that traffic has recovered.
 
 Rerun the same command to continue unfinished files. Completed shares are listed again so newly added files can be found. If the server reports a downstream traffic cap, the tool tries the next available account. If all accounts are cooling, it waits for the earliest one-hour retry time; another cap restarts that account's timer. An hour is a retry interval, not a guarantee that the server quota has reset. Ctrl+C interrupts the wait. If all accounts are occupied by local processes, it reports “no available account.” Session and workspace failures do not start traffic cooldowns.
 

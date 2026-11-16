@@ -34,6 +34,21 @@ class Accounts:
     def device_path(self, account_id):
         return os.path.join(self.directory(account_id), 'device_id')
 
+    def is_in_use(self, item):
+        """Probe the existing lease without creating files or rewriting its PID."""
+        path = os.path.join(self.directory(item['id']), 'lock')
+        try:
+            with open(path, 'r') as handle:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return True
+                return False
+        except FileNotFoundError:
+            return False
+        except OSError as error:
+            raise PikPakError(f'账号 {item["label"]} 的占用状态无法读取：{error}') from error
+
     def traffic_retry_at(self, item):
         """Return the next downstream retry time, or zero if none was recorded."""
         path = os.path.join(self.directory(item['id']), 'traffic_capped_at')
