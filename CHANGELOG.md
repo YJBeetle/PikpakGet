@@ -4,9 +4,10 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
-- Show local account usage and recorded traffic cooldowns in `--accounts`, including remaining duration and retry time, without contacting PikPak or changing account lock files.
+- Centralize transient-error classification, bounded request retries and interruptible waits across authentication, shield tokens, APIs and transfers. Nested exhaustion no longer multiplies retry budgets, and ambiguous cloud writes are never blindly replayed.
+- Let temporary failures during setup, listing, transfer or cleanup use the remaining task passes despite zero completed files. Preserve partial downloads and cloud copies; keep disk errors, credential rejection, permanent share failures and downstream caps separate.
 
-- Retry transient session-refresh failures without discarding credentials or asking for login. Mark short downloads as network failures, preserve their attempt budget, and keep round-summary quota outages from aborting remaining passes.
+- Show local account usage and recorded traffic cooldowns in `--accounts`, including remaining duration and retry time, without contacting PikPak or changing account lock files.
 
 - Default the cloud cleanup prompt to `[Y/n]`: Enter confirms deletion of all listed `Pack From Shared` items. `-y/--yes` now confirms the same full cleanup, including items with unknown ownership. Noninteractive runs without `-y` still keep the contents.
 

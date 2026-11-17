@@ -235,8 +235,9 @@ def build_parser():
                         help='seconds to rest between files, to keep request density low')
     parser.add_argument('--repeat', type=int, default=3,
                         help='pass over the list up to N times, returning to links that '
-                             'had a transient failure (default: %(default)s; 0 = one pass). Stops early if a '
-                             'whole pass lands nothing')
+                             'had a transient failure (default: %(default)s; 0 = one pass). '
+                             'Temporary request failures may retry even with zero completed files; '
+                             'other zero-progress passes stop early')
     parser.add_argument('--limit', type=int, default=0, help='process at most N links')
     parser.add_argument('--max-files', type=int, default=0, help='download at most N files')
     parser.add_argument('--skip-ext', default='', metavar='EXT[,EXT...]',
@@ -514,19 +515,10 @@ def _run_group(args, log, registry, jobs):
             return 3, completed
         try:
             client = registry.client(item, logger=log, stop=lambda: STOP)
-            if actual_download:
-                try:
-                    workspace_id = client.prepare_workspace()
-                except PikPakError as error:
-                    log(f'账号 {item["label"]} 的网盘临时文件夹无法清理：{error}', 'error')
-                    excluded.add(item['id'])
-                    continue
-            else:
-                workspace_id = None
             if file_budget:
                 args.max_files = file_budget - completed
             pipeline = Pipeline(args, log, stop=lambda: STOP, client=client,
-                                account_id=item['id'], workspace_id=workspace_id,
+                                account_id=item['id'], workspace_id=None,
                                 account_label=item['label'],
                                 confirm_cleanup=lambda items, owned: _confirm_cloud_cleanup(
                                     items, owned, item['label'], log))
@@ -540,7 +532,15 @@ def _run_group(args, log, registry, jobs):
                 print(f'云盘   {human(space["usage"])} / {human(space["limit"])}')
                 print(f'订阅   {expires.split("T")[0] + " 到期" if expires else "无到期时间"}')
                 return 0, completed
-            code = pipeline.run(jobs)
+            try:
+                code = pipeline.run(jobs)
+            except PikPakError as error:
+                if (actual_download and not pipeline.initialized
+                        and error.replay_safe and not error.transient):
+                    log(f'账号 {item["label"]} 初始化失败：{error}', 'error')
+                    excluded.add(item['id'])
+                    continue
+                raise
             completed += pipeline.files_done
             if code == 4:
                 registry.mark_traffic_capped(item)

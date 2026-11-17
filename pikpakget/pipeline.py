@@ -22,11 +22,13 @@ import unicodedata
 
 from .progress import TransferProgress
 
-from .api import (CLOUD_FOLDER_NAME, DOT_DIR_NAME, Client, PikPakError, RestoreOutcomeUnknown,
+from .api import (CLOUD_FOLDER_NAME, DOT_DIR_NAME, Client, PikPakError,
                  TrafficCapped, account_dir,
                  parse_share_url, share_root_id)
 from .stream import (PIECE_SIZES, SegmentRefused, download_segments, download_stream,
                      verify_content)
+from .errors import MutationOutcomeUnknown
+from .network import NETWORK_RETRY_WAITS, require_complete
 
 SPACE_HEADROOM = 400_000_000          # keep this much cloud space free
 LOCAL_HEADROOM = 20_000_000_000       # ... and this much on the target volume
@@ -417,6 +419,8 @@ class Pipeline:
         self.auto_yes = getattr(args, 'yes', False)
         self.skip_ext = parse_skip_ext(getattr(args, 'skip_ext', ''))
         self.traffic_capped = False
+        self.transient_failures = 0
+        self.initialized = False
         self.state = State(os.path.join(args.state_dir, 'state.json')
                            if getattr(args, 'state_dir', None) else None,
                            root=getattr(args, 'series_root', None),
@@ -798,8 +802,7 @@ class Pipeline:
         url = self.client.download_url(file_id)[0]
         written = download_stream(url, part, expected, resume, stop=self.stop,
                                   on_progress=on_progress)
-        if expected and written != expected:
-            raise PikPakError(f'下载不完整 {written}/{expected}', network=written < expected)
+        require_complete(written, expected)
         return part, 'transfer-ready'
 
     def discard_partial(self, final):
@@ -966,7 +969,28 @@ class Pipeline:
         return self.space()['free'] >= needed
 
     # --------------------------------------------------------------------- drive
+    def _temporary_failure(self, job, error):
+        self.transient_failures += 1
+        link = self.state.link(job.get('key') or job_key(job))
+        link.update({'status': 'retry', 'error': str(error)[:300]})
+        self.state.save()
+        self.log(f'临时请求失败 {job["share_id"][-8:]}，已保留进度等待重试：{error}', 'warn')
+        return 'retry'
+
     def run_link(self, job):
+        """Route failures from every phase, including quota checks and cleanup."""
+        try:
+            return self._run_link(job)
+        except PikPakError as error:
+            if self.stop():
+                self.state.link(job.get('key') or job_key(job))['status'] = 'partial'
+                self.state.save()
+                return 'stopped'
+            if error.transient and error.replay_safe:
+                return self._temporary_failure(job, error)
+            raise
+
+    def _run_link(self, job):
         key = job.get('key') or job_key(job)
         link = self.state.link(key)
         link['order'] = job['order']
@@ -976,10 +1000,16 @@ class Pipeline:
         try:
             report = self.inventory(job)
         except PikPakError as error:
+            if self.stop():
+                link['status'] = 'partial'
+                self.state.save()
+                return 'stopped'
+            if error.transient and error.replay_safe:
+                return self._temporary_failure(job, error)
             link.update({'status': 'error', 'error': str(error)[:300],
                          'attempts': link['attempts'] + 1})
             self.state.save()
-            self.log(f'链接不可用 {job["share_id"][-8:]}: {error}', 'error')
+            self.log(f'读取分享失败 {job["share_id"][-8:]}: {error}', 'error')
             return 'throttled' if self.note_throttle(error) else 'error'
         # a listing that answers is proof the credentials work, so anything refused
         # further down is about that one file, not about the session
@@ -1011,7 +1041,9 @@ class Pipeline:
             return 'error'
         adopted = 0
         for position, node in enumerate(files, 1):
-            if self.stop() or self.files_left <= 0:
+            previous_state = self.state.data['files'].get(file_key(key, node['id']), {}).get('state')
+            if self.stop() or (self.files_left <= 0 and previous_state not in
+                               ('done', 'downloaded', 'unverified')):
                 link['status'] = 'partial'
                 self.state.save()
                 return 'stopped'
@@ -1053,6 +1085,7 @@ class Pipeline:
                            'local': record.get('local') or planned_local})
             if record['state'] == 'unverified':
                 if size_on_disk(record.get('local')):
+                    self.forget([record.get('restored_id')], node['size'])
                     # an hour of quota is not worth re-litigating an unproven rule on
                     # every pass, so the quarantined copy stays put until a human
                     # deletes it
@@ -1075,6 +1108,10 @@ class Pipeline:
                 continue
             if record['state'] in ('done', 'downloaded'):
                 record['state'] = 'pending'
+            if self.files_left <= 0:
+                link['status'] = 'partial'
+                self.state.save()
+                return 'stopped'
             if self.quota_limit and node['size'] > self.quota_limit - SPACE_HEADROOM:
                 # restoring this would fail half-way and leave the drive full
                 record.update({'state': 'too_big',
@@ -1092,14 +1129,17 @@ class Pipeline:
                     resumed = (cloud_file.get('kind') == 'drive#file'
                                and int(cloud_file.get('size') or 0) == node['size']
                                and not cloud_file.get('trashed'))
-                except PikPakError:
-                    pass
+                except PikPakError as error:
+                    if error.transient:
+                        raise
             if not resumed and space['limit'] and space['free'] < needed:
                 self.log(f'云盘空间不足：转存 {human(node["size"])} 需要约 {human(needed)}，'
                          f'可用 {human(space["free"])}', 'warn')
                 try:
                     reclaimed = self.reclaim_workspace(needed)
                 except PikPakError as error:
+                    if error.transient:
+                        raise
                     reclaimed = False
                     self.log(f'Pack From Shared 清理失败：{error}', 'warn')
                 if not reclaimed:
@@ -1167,12 +1207,12 @@ class Pipeline:
                 self.log(f'    完成（{int(secs) // 60}分{int(secs) % 60:02d}秒{detail}），'
                          '云端已清理')
             except (PikPakError, OSError) as error:
-                if isinstance(error, RestoreOutcomeUnknown):
+                if isinstance(error, MutationOutcomeUnknown):
                     record['attempts'] = max(record['attempts'] - 1, 0)
                     record['state'] = 'retry'
                     record['error'] = str(error)[:300]
                     self.state.save()
-                    self.log('转存请求的结果未知，停止本轮；下次启动会检查云端副本', 'error')
+                    self.log(f'云端写入结果未知，停止重发；下次启动检查副本：{error}', 'error')
                     return 'throttled'
                 if self.stop():
                     record['state'] = 'retry'
@@ -1181,16 +1221,24 @@ class Pipeline:
                     self.state.save()
                     self.log('本轮已中断；本地片段和已识别的云端副本保留供续传', 'warn')
                     return 'stopped'
+                if isinstance(error, PikPakError) and error.transient:
+                    if record['state'] in ('downloaded', 'unverified'):
+                        # The transfer used its file slot even if cloud cleanup
+                        # failed. Later passes only need to finish that cleanup.
+                        self.files_done += 1
+                        self.bytes_done += node['size']
+                    else:
+                        record['attempts'] = max(record['attempts'] - 1, 0)
+                        record['state'] = 'retry'
+                        self.files_left += 1
+                    record['error'] = str(error)[:300]
+                    return self._temporary_failure(job, error)
                 if isinstance(error, TrafficCapped):
                     # the cap is not this file's fault: hand back the attempt just
                     # spent so the next run still has the full budget for it
                     record['attempts'] = max(record['attempts'] - 1, 0)
                     record['state'] = 'pending'
                 else:
-                    if getattr(error, 'network', False):
-                        # a flaky link is not this file's fault either: refund the
-                        # attempt so a long outage cannot permanently fail a file
-                        record['attempts'] = max(record['attempts'] - 1, 0)
                     record['state'] = 'failed' if record['attempts'] >= MAX_ATTEMPTS else 'retry'
                 record['error'] = str(error)[:300]
                 link['status'] = 'partial'
@@ -1243,42 +1291,58 @@ class Pipeline:
             return 2
         self.state.reset_transient_failures()
         self.state.save()
-        space = self.space()
-        self.quota_limit = space['limit']
-        account = f'账号 {self.account_label} | ' if self.account_label else ''
-        self.log(f'{account}{len(jobs)} 个链接 -> {self.args.dest} | 云盘 '
-                 f'{human(space["usage"])}/{human(space["limit"])} 已用'
-                 f'（回收站 {human(space["in_trash"])}）| '
-                 f'本地可用 {human(shutil.disk_usage(self.args.dest).free)} | '
-                 f'并发 {self.args.connections} 段')
-        if self.workspace_id:
-            self.reclaim_workspace(0)
         if self.args.limit:
             jobs = jobs[:self.args.limit]
+        initialized = False
         for pass_number in itertools.count(1):
             if pass_number > (self.args.repeat or 1):
                 break
             tally, before_done, before_bytes = collections.Counter(), self.files_done, self.bytes_done
-            for position, job in enumerate(jobs, 1):
-                if self.stop():
-                    break
-                self.log(f'— 第{pass_number}轮 [{position}/{len(jobs)}] {job["url"]}')
-                tally[self.run_link(job)] += 1
-                if tally.get('throttled') or self.stop():
-                    break
+            self.transient_failures = 0
+            if not initialized:
+                try:
+                    if jobs and self.account_id and not self.workspace_id:
+                        self.workspace_id = self.client.prepare_workspace()
+                    space = self.space()
+                    self.quota_limit = space['limit']
+                    account = f'账号 {self.account_label} | ' if self.account_label else ''
+                    self.log(f'{account}{len(jobs)} 个链接 -> {self.args.dest} | 云盘 '
+                             f'{human(space["usage"])}/{human(space["limit"])} 已用'
+                             f'（回收站 {human(space["in_trash"])}）| '
+                             f'本地可用 {human(shutil.disk_usage(self.args.dest).free)} | '
+                             f'并发 {self.args.connections} 段')
+                    if self.workspace_id:
+                        self.reclaim_workspace(0)
+                    initialized = True
+                    self.initialized = True
+                except PikPakError as error:
+                    if not error.transient or not error.replay_safe:
+                        raise
+                    self.transient_failures += 1
+                    tally['retry'] += 1
+                    self.log(f'下载准备暂时失败，进度已保留：{error}', 'warn')
+            if initialized:
+                for position, job in enumerate(jobs, 1):
+                    if self.stop():
+                        break
+                    self.log(f'— 第{pass_number}轮 [{position}/{len(jobs)}] {job["url"]}')
+                    tally[self.run_link(job)] += 1
+                    if tally.get('throttled') or self.stop():
+                        break
             if self.stop():
                 self.log(f'第 {pass_number} 轮已中断；进度已保存')
                 return 1
+            if tally.get('throttled'):
+                return 4 if self.traffic_capped else 1
             try:
-                quota_note = f'云盘占用 {human(self.space()["usage"])}'
+                quota_note = ('云盘用量暂未刷新（临时请求失败）' if self.transient_failures
+                              else f'云盘占用 {human(self.space()["usage"])}')
             except PikPakError as error:
-                if not error.network:
+                if not error.transient:
                     raise
                 quota_note = '云盘用量暂不可读（网络异常，进度已保留）'
                 self.log(f'查询轮末云盘用量失败：{error}', 'warn')
             self.log(f'第 {pass_number} 轮结束：{dict(tally)} | {quota_note}')
-            if tally.get('throttled'):
-                return 4 if self.traffic_capped else 1
             if self.stop():
                 return 1
             # only this run's list: leftovers from earlier link files, or links the
@@ -1287,6 +1351,15 @@ class Pipeline:
                           if self.state.link(job.get('key') or job_key(job))['status'] != 'done']
             if not unfinished:
                 return 0
+            if self.transient_failures:
+                if pass_number >= (self.args.repeat or 1):
+                    break
+                delay = NETWORK_RETRY_WAITS[min(pass_number - 1, len(NETWORK_RETRY_WAITS) - 1)]
+                self.log(f'本轮有临时请求失败；{delay}s 后进入下一轮'
+                         f'（{pass_number + 1}/{self.args.repeat or 1}），保留片段与云端副本', 'warn')
+                if self.wait_gap(delay):
+                    return 1
+                continue
             if self.files_done == before_done and self.bytes_done == before_bytes:
                 # nothing landed this pass: circling again would only burn quota and
                 # goodwill, so stop and let a human look

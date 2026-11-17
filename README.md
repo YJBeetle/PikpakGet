@@ -76,7 +76,7 @@ The cloud staging folder is `Pack From Shared`. At the start of a download, the 
 | `--max-files N` | unlimited | Limit file processing; failed attempts may also use a slot |
 | `--skip-ext EXT[,EXT...]` | empty | Skip files with matching extensions (case-insensitive, optional leading dot, e.g. `txt,.nfo`); not restored, downloaded, or counted |
 | `--limit N` | unlimited | Process only the first N links |
-| `--repeat N` | `3` | Maximum list passes, including the first; stop early if no file completes in a pass; 0 means one pass |
+| `--repeat N` | `3` | Maximum passes, including the first; zero-progress passes stop early unless a temporary request failed; 0 means one pass |
 | `--gap SEC` | `20` | Seconds to wait between files |
 | `--no-delete` | off | Keep this run's cloud copies; low space may later prompt to clear them |
 | `--log -` | log file | Print only to the terminal |
@@ -111,6 +111,10 @@ The account ID is derived from the server user ID. Signing in again to the same 
 Rerun the same command to continue unfinished files. Completed shares are listed again so newly added files can be found. If the server reports a downstream traffic cap, the tool tries the next available account. If all accounts are cooling, it waits for the earliest one-hour retry time; another cap restarts that account's timer. An hour is a retry interval, not a guarantee that the server quota has reset. Ctrl+C interrupts the wait. If all accounts are occupied by local processes, it reports “no available account.” Session and workspace failures do not start traffic cooldowns.
 
 ## Verification and limits
+
+Network failures share one transient-error policy and do not imply invalid credentials, an unavailable share, or an account traffic cap. Replay-safe API requests, including refresh, shield credentials, listing and cleanup by ID, make at most five attempts with interruptible backoff. Exhaustion in a nested call propagates without multiplying retries. Interrupted or short downloads keep their fragments and identified cloud copies for later passes without spending the file failure budget. Temporary failures during setup, listing, downloading or cleanup can use the remaining `--repeat` passes even if no file completed; the default is three passes. Exhaustion still exits with progress preserved. The zero-progress guard remains for ordinary logic failures.
+
+If a cloud write such as a restore or folder creation loses its reply after submission, it may already have taken effect. The tool reports an unknown write outcome and stops replaying it; the next run checks the cloud state. Disk errors, explicit credential rejection and confirmed downstream caps remain separate from ordinary network retries.
 
 Downloads go to a `.part` file first. When complete, the tool tries to verify them against the share's content hash. The hash's block format is inferred from samples; failure to match a known block size does not prove that the bytes are corrupt. After retries are exhausted, the bytes are kept as `.unverified` and are not treated as verified.
 
