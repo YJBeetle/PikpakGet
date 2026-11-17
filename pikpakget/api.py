@@ -18,6 +18,10 @@ import urllib.parse
 import urllib.request
 import uuid
 
+from .errors import (PikPakError, TrafficCapped, MutationOutcomeUnknown, RestoreOutcomeUnknown)
+from .network import (REQUEST_ATTEMPTS, TRANSPORT_ERRORS,
+                      check_stop, interruptible_wait, retry, transport_error)
+
 USER_API = 'https://user.mypikpak.com'
 DRIVE_API = 'https://api-drive.mypikpak.com/drive'
 VIP_API = 'https://api-drive.mypikpak.com/vip'
@@ -65,10 +69,6 @@ CAPTCHA_SALTS = (
 
 TOKEN_REFRESH_MARGIN = 900          # refresh when <15 min left
 CAPTCHA_TTL = 240                   # the server issues 300s
-THROTTLE_BACKOFF = (30, 120, 480, 900)
-# A dropped TLS session is routine on this network, not a verdict about the link:
-# retry it quickly, and only give up after several attempts.
-NETWORK_RETRY_WAITS = (5, 15, 45, 120, 240)
 # The per-socket timeout cannot bound a read that keeps receiving dribs of data;
 # a total wall-clock deadline per request can.
 REQUEST_DEADLINE = 120
@@ -78,31 +78,6 @@ SHARE_ID = re.compile(
 # carrying an upsell body, so nothing in the retry ladder would recognise it: every
 # remaining file would spend its attempts against the same wall.
 TRAFFIC_CAP = re.compile(r'downstream traffic|has exceeded the limit', re.I)
-
-
-class PikPakError(RuntimeError):
-    """An API failure, with enough detail for the caller to tell a bad link apart
-    from a rate limit, a dead session and a transport failure."""
-
-    def __init__(self, message, status=None, code=None, action=None, throttled=False,
-                 network=False):
-        super().__init__(message)
-        self.status = status
-        self.code = code
-        self.action = action
-        self.throttled = throttled
-        self.network = network
-
-    def __str__(self):
-        # a local failure (no session, nothing sent) should not claim an HTTP status
-        # of None, and a server failure should still carry the three fields that make
-        # it diagnosable from a log line alone
-        detail = ', '.join(part for part in (
-            f'HTTP {self.status}' if self.status is not None else '',
-            f'code={self.code}' if self.code is not None else '',
-            f'action={self.action}' if self.action else '') if part)
-        base = super().__str__()
-        return f'{base} [{detail}]' if detail else base
 
 
 def _safe_body(body):
@@ -121,16 +96,6 @@ def _safe_body(body):
         else:
             kept[key] = value
     return json.dumps(kept, ensure_ascii=False)
-
-
-class TrafficCapped(PikPakError):
-    """Today's downstream traffic quota is used up. Backing off for minutes fixes
-    nothing — the counter is daily — so the run ends and the same command is re-run
-    after it rolls over."""
-
-
-class RestoreOutcomeUnknown(PikPakError):
-    """The restore request may have succeeded despite losing its response."""
 
 
 def captcha_sign(client_id, device_id, timestamp=None):
@@ -284,10 +249,11 @@ class Client:
         metas = ({'email': username} if '@' in username
                  else {'phone_number': username} if username.isdigit()
                  else {'username': username})
-        status, body = self._raw('POST', f'{USER_API}/v1/shield/captcha/init', auth=False,
-                                 json_body={'client_id': CLIENT_ID, 'action': f'POST:{signin_url}',
-                                            'device_id': self.device_id, 'meta': metas},
-                                 headers=self._client_headers())
+        status, body = self._request(
+            lambda: self._raw('POST', f'{USER_API}/v1/shield/captcha/init', auth=False,
+                              json_body={'client_id': CLIENT_ID, 'action': f'POST:{signin_url}',
+                                         'device_id': self.device_id, 'meta': metas},
+                              headers=self._client_headers()), action='signin:captcha')
         token = body.get('captcha_token') if status == 200 else None
         if not token:
             if body.get('url'):
@@ -295,10 +261,11 @@ class Client:
                                   status=status, action='signin')
             raise PikPakError(f'无法取得登录验证码: {_safe_body(body)}',
                               status=status, action='signin')
-        status, body = self._raw('POST', signin_url, auth=False, form={
+        status, body = self._request(lambda: self._raw('POST', signin_url, auth=False, form={
             'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'username': username,
             'password': password, 'captcha_token': token},
-            headers={**self._client_headers(), 'Content-Type': 'application/x-www-form-urlencoded'})
+            headers={**self._client_headers(), 'Content-Type': 'application/x-www-form-urlencoded'}),
+            action='signin', replay_safe=False)
         if status != 200 or not body.get('access_token'):
             detail = str(body.get('error_description') or body)
             hint = ''
@@ -332,30 +299,16 @@ class Client:
         if not self.session.data.get('refresh_token'):
             self.session_dead = True
             raise PikPakError('会话没有 refresh_token，请重新登录', action='refresh')
-        for attempt in range(len(NETWORK_RETRY_WAITS)):
-            if self.stop():
-                raise PikPakError('已中断（登录状态已保留）', action='refresh')
-            status, body = self._raw('POST', f'{USER_API}/v1/auth/token', auth=False, json_body={
+        status, body = self._request(
+            lambda: self._raw('POST', f'{USER_API}/v1/auth/token', auth=False, json_body={
                 'client_id': CLIENT_ID, 'grant_type': 'refresh_token',
-                'refresh_token': self.session.data['refresh_token']}, headers=self._client_headers())
-            if self.stop():
-                raise PikPakError('已中断（登录状态已保留）', action='refresh')
-            if status == 200 and body.get('access_token'):
-                break
+                'refresh_token': self.session.data['refresh_token']}, headers=self._client_headers()),
+            action='refresh')
+        if status != 200 or not body.get('access_token'):
             self.session_dead = status in (400, 401, 403)
-            network = status is None
-            transient = network or status == 429 or (status is not None and status >= 500)
             hint = '（请重新登录）' if self.session_dead else '（登录状态已保留）'
-            error = PikPakError(
-                f'会话续期失败: {body.get("error_description") or body}{hint}',
-                status=status, action='refresh', network=network,
-                throttled=status in (429, 503))
-            if not transient or attempt + 1 == len(NETWORK_RETRY_WAITS):
-                raise error
-            delay = NETWORK_RETRY_WAITS[attempt]
-            self.log(f'会话续期暂不可用：{body.get("error_description") or body}；'
-                     f'{delay}s 后重试（保留登录状态）', 'warn')
-            self._wait(delay)
+            raise PikPakError(f'会话续期失败: {body.get("error_description") or body}{hint}',
+                              status=status, action='refresh')
         record = self._token_record(body)
         record['sub'] = record.get('sub') or self.session.user_id
         self.session.store(record)
@@ -395,7 +348,11 @@ class Client:
         try:
             request = urllib.request.Request(url, data=data, method=method, headers=merged)
             deadline = time.monotonic() + REQUEST_DEADLINE
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            try:
+                response = urllib.request.urlopen(request, timeout=self.timeout)
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
                 chunks = []
                 while True:
                     if self.stop():
@@ -408,101 +365,104 @@ class Client:
                         break
                     chunks.append(chunk)
                 return response.status, _loads(b''.join(chunks))
-        except urllib.error.HTTPError as error:
-            return error.code, _loads(error.read())
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
-            return None, {'error_description': f'{type(error).__name__}: {error}'}
+        except TRANSPORT_ERRORS as error:
+            return None, {'error_description': str(transport_error(error))}
 
     @staticmethod
     def _throttled(status, body):
         text = str(body.get('error_description') or body.get('error') or '').lower()
-        return (status in (429, 503) or body.get('error_code') in (4002, 4003)
-                or 'slow down' in text or 'too many' in text or 'rate' in text)
+        return (status == 429 or body.get('error_code') in (4002, 4003)
+                or 'slow down' in text or 'too many' in text
+                or any(term in text for term in ('rate limit', 'rate_limit', 'ratelimit')))
 
     def captcha_token(self, action):
         cached = self._captchas.get(action)
         if cached and cached[1] > time.time():
             return cached[0]
-        sign, stamp = captcha_sign(CLIENT_ID, self.device_id)
-        status, body = self._raw('POST', f'{USER_API}/v1/shield/captcha/init',
-                                 json_body={'client_id': CLIENT_ID, 'action': action,
-                                            'device_id': self.device_id,
-                                            'meta': {'captcha_sign': sign, 'timestamp': stamp,
-                                                     'client_version': CLIENT_VERSION,
-                                                     'package_name': PACKAGE_NAME,
-                                                     'user_id': self.session.user_id}},
-                                 headers={'Authorization': f'Bearer {self.ensure_session()}'})
+
+        def request():
+            access_token = self.ensure_session()
+            sign, stamp = captcha_sign(CLIENT_ID, self.device_id)
+            return self._raw('POST', f'{USER_API}/v1/shield/captcha/init',
+                             json_body={'client_id': CLIENT_ID, 'action': action,
+                                        'device_id': self.device_id,
+                                        'meta': {'captcha_sign': sign, 'timestamp': stamp,
+                                                 'client_version': CLIENT_VERSION,
+                                                 'package_name': PACKAGE_NAME,
+                                                 'user_id': self.session.user_id}},
+                             headers={'Authorization': f'Bearer {access_token}'})
+
+        status, body = self._request(request, action=f'captcha:{action}')
         token = body.get('captcha_token') if status == 200 else None
         if not token:
-            raise PikPakError(f'验证码 token 申请失败: {body.get("error_description") or body}',
-                              status=status, code=body.get('error_code'), action=action,
-                              throttled=self._throttled(status, body))
+            raise PikPakError(f'自动校验凭证申请失败: {body.get("error_description") or body}',
+                              status=status, code=body.get('error_code'), action=action)
         self._captchas[action] = (token, time.time() + CAPTCHA_TTL)
         return token
 
+    def _response_error(self, status, body, action):
+        problem = str(body.get('error_description') or body.get('error') or '请求失败')
+        if status is not None and (TRAFFIC_CAP.search(problem) or TRAFFIC_CAP.search(str(body))):
+            return TrafficCapped(f'今日下行流量已到上限: {problem[:160]}', status=status,
+                                 code=body.get('error_code'), action=action)
+        return PikPakError(problem, status=status, code=body.get('error_code'), action=action,
+                           throttled=self._throttled(status, body), network=status is None)
+
+    def _retry(self, operation, attempts=REQUEST_ATTEMPTS):
+        return retry(operation, log=self.log, stop=self.stop, wait=self._wait, attempts=attempts)
+
+    def _request(self, operation, *, action, replay_safe=True):
+        def request():
+            status, body = operation()
+            check_stop(self.stop, action)
+            if status is None or not 200 <= status < 300:
+                error = self._response_error(status, body, action)
+                if not replay_safe and (status is None or status >= 500):
+                    raise MutationOutcomeUnknown(f'写入请求结果未知，可能已生效: {error}',
+                                                 status=status, action=action, network=status is None)
+                if error.transient or isinstance(error, TrafficCapped):
+                    raise error
+            return status, body
+        return self._retry(request)
+
     def call(self, method, path, *, params=None, json_body=None, base=DRIVE_API,
              action=None, retries=None):
-        """One API call. The shield token is per action, so it is minted lazily
-        and reused inside its lifetime."""
+        """One policy for API calls; ambiguous cloud writes are never replayed."""
         action = action or f'{method}:/drive{path}'
-        attempts = retries if retries is not None else len(NETWORK_RETRY_WAITS)
-        last = {}
-        for attempt in range(attempts):
-            if self.stop():
-                raise PikPakError('已中断（进度已保存）', action=action)
+        replay_safe = (method in ('GET', 'HEAD', 'OPTIONS')
+                       or path in ('/v1/files:batchTrash', '/v1/files:batchDelete'))
+
+        def request():
+            token = self.captcha_token(action)
+            check_stop(self.stop, action)
             status, body = self._raw(method, f'{base}{path}', params=params, json_body=json_body,
-                                     headers={'x-action': action,
-                                              'x-captcha-token': self.captcha_token(action)})
-            if self.stop():
-                raise PikPakError('已中断（进度已保存）', action=action)
+                                     headers={'x-action': action, 'x-captcha-token': token})
+            check_stop(self.stop, action)
             if status and 200 <= status < 300:
                 return body
-            last = {'status': status, **body}
-            problem = str(body.get('error_description') or body.get('error') or '请求失败')
-            if status is None:                          # socket/TLS/DNS level failure
-                if retries == 1:
-                    error_type = (RestoreOutcomeUnknown if path == '/v1/share/restore'
-                                  else PikPakError)
-                    raise error_type(f'网络请求结果未知，可能已生效: {problem[:160]}',
-                                     action=action, network=True)
-                wait = NETWORK_RETRY_WAITS[min(attempt, len(NETWORK_RETRY_WAITS) - 1)]
-                self.log(f'网络抖动（{problem[:70]}），{wait}s 后重试', 'warn')
-                self._wait(wait)
-                continue
-            if TRAFFIC_CAP.search(problem) or TRAFFIC_CAP.search(str(body)):
-                # a fact about the account today, not about this file: no back-off
-                # ladder here; the account scheduler handles rotation and retry
-                raise TrafficCapped(f'今日下行流量已到上限: {problem[:160]}', status=status,
-                                    code=body.get('error_code'), action=action)
-            throttled = self._throttled(status, body)
+            error = self._response_error(status, body, action)
+            if not replay_safe and (status is None or status >= 500):
+                kind = RestoreOutcomeUnknown if path == '/v1/share/restore' else MutationOutcomeUnknown
+                raise kind(f'写入请求结果未知，可能已生效: {error}', status=status,
+                           action=action, network=status is None)
+            if isinstance(error, TrafficCapped):
+                raise error
+            problem = str(body.get('error_description') or body.get('error') or '')
             if status in (401, 403) and 'token' in problem.lower():
                 self._captchas.clear()
                 self.ensure_session(force=True)
-                continue
-            if throttled:
-                wait = THROTTLE_BACKOFF[min(attempt, len(THROTTLE_BACKOFF) - 1)]
-                self.log(f'被限流（HTTP {status}），等待 {wait}s 后重试', 'warn')
+                error.retry_after = 0
+            if error.throttled:
                 self._captchas.clear()
-                self._wait(wait)
-                continue
-            raise PikPakError(problem, status=status, code=body.get('error_code'),
-                              action=action, throttled=throttled)
-        network = last.get('status') is None
-        raise PikPakError(str(last.get('error_description') or '重试后仍失败'),
-                          status=last.get('status'), action=action,
-                          throttled=not network, network=network)
+            raise error
+
+        return self._retry(request, attempts=retries if retries is not None else REQUEST_ATTEMPTS)
 
     def _wait(self, seconds):
-        """Back-off that Ctrl+C ends promptly instead of after the full wait."""
-        deadline = time.monotonic() + seconds
-        while not self.stop():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return
-            time.sleep(min(0.5, remaining))
-        raise PikPakError('已中断（进度已保存）')
+        interruptible_wait(seconds, self.stop, sleep=lambda step: time.sleep(step))
 
     # --------------------------------------------------------------------- read
+
     def about(self):
         return self.call('GET', '/v1/about',
                          params={'with_quotas': 'true', 'with_third_party_information': 'false'})

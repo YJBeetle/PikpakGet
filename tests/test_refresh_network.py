@@ -5,7 +5,8 @@ import time
 import unittest
 from unittest import mock
 
-from pikpakget.api import Client, NETWORK_RETRY_WAITS, PikPakError
+from pikpakget.api import Client, PikPakError
+from pikpakget.network import NETWORK_RETRY_WAITS, REQUEST_ATTEMPTS
 from pikpakget.cli import build_parser
 from pikpakget.pipeline import Pipeline
 
@@ -41,9 +42,9 @@ class TestRefreshNetwork(unittest.TestCase):
         self.assertFalse(self.client.session_dead)
         self.assertNotIn('重新登录', str(caught.exception))
         self.assertEqual(self.client.session.data, original)
-        self.assertEqual(self.client._raw.call_count, len(NETWORK_RETRY_WAITS))
+        self.assertEqual(self.client._raw.call_count, REQUEST_ATTEMPTS)
         self.assertEqual([c.args[0] for c in self.client._wait.call_args_list],
-                         list(NETWORK_RETRY_WAITS[:-1]))
+                         list(NETWORK_RETRY_WAITS[:REQUEST_ATTEMPTS - 1]))
 
     def test_temporary_server_failure_and_rate_limit_do_not_kill_session(self):
         self.client._raw = mock.Mock(side_effect=[

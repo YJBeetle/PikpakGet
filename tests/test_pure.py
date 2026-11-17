@@ -2472,7 +2472,7 @@ class TestTransientNetworkRetry(unittest.TestCase):
         self.waits()
         with self.assertRaises(api.PikPakError) as caught:
             self.client.about()
-        self.assertEqual(sum(self.slept), 5 + 15 + 45 + 120 + 240)
+        self.assertEqual(sum(self.slept), 5 + 15 + 45 + 120)
         self.assertTrue(caught.exception.network, 'transport failures are marked network')
         self.assertFalse(caught.exception.throttled, 'a dead link is not a rate limit')
 

@@ -20,6 +20,8 @@ import threading
 import time
 
 from .api import PikPakError
+from .network import (TRANSPORT_ERRORS, check_stop, interruptible_wait, transport_error,
+                      require_complete)
 
 CHUNK = 1 << 20
 LAUNCH_STAGGER = 3                 # seconds between opening connections
@@ -315,9 +317,8 @@ def download_stream(url, target, expected_size=0, resume_from=0, timeout=STALL_S
     except urllib.error.HTTPError as error:
         raise PikPakError(f'下载被拒: HTTP {error.code}', status=error.code,
                           throttled=error.code in (403, 429, 503)) from error
-    except (urllib.error.URLError, TimeoutError, OSError) as error:
-        raise PikPakError(f'下载中断: {type(error).__name__} {error}',
-                          network=True) from error
+    except TRANSPORT_ERRORS as error:
+        raise transport_error(error, action='download') from error
     with response:
         if resume_from and response.status != 206:
             written = 0                       # the server restarted the range
@@ -330,15 +331,15 @@ def download_stream(url, target, expected_size=0, resume_from=0, timeout=STALL_S
                     raise PikPakError('已中断（.part 已保留，重跑即续传）')
                 try:
                     block = response.read(CHUNK)
-                except (urllib.error.URLError, TimeoutError, OSError) as error:
-                    raise PikPakError(f'下载中断: {type(error).__name__} {error}',
-                                      network=True) from error
+                except TRANSPORT_ERRORS as error:
+                    raise transport_error(error, action='download') from error
                 if not block:
                     break
                 handle.write(block)
                 written += len(block)
                 if on_progress:
                     on_progress(written, time.time() - started)
+    require_complete(written, expected_size)
     return written
 
 
@@ -350,19 +351,10 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
 
     Connections open one at a time, and a round that makes no progress gives up on
     segmentation instead of paying another back-off wait for it."""
-    def check_stop():
-        if stop():
-            raise PikPakError('已中断（分段进度保留，重跑即续传）')
+    def pause(seconds):
+        interruptible_wait(seconds, stop, sleep=wait, interval=0.2)
 
-    def interruptible_wait(seconds):
-        check_stop()
-        while seconds > 0:
-            step = min(0.2, seconds)
-            wait(step)
-            seconds -= step
-            check_stop()
-
-    check_stop()
+    check_stop(stop)
     seg_dir = _segment_path(target, connections)
     for stale in sorted(_glob.glob(f'{target}.segs*')):
         if stale != seg_dir:
@@ -378,7 +370,7 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
     report_progress()
     last_progress = True        # back off only when a round actually got nowhere
     for attempt in range(len(SEGMENT_RETRY_WAITS) + 1):
-        check_stop()
+        check_stop(stop)
         wait_seconds = 0 if last_progress else SEGMENT_RETRY_WAITS[attempt - 1]
         missing = [item for item in plan if _segment_have(item) < item['want']]
         if not missing:
@@ -386,17 +378,17 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
         before = sum(_segment_have(item) for item in plan)
         if wait_seconds:
             log(f'{len(missing)} 段未完成，等待 {wait_seconds}s 后第 {attempt} 次退避重试', 'warn')
-            interruptible_wait(wait_seconds)
+            pause(wait_seconds)
         elif attempt:
             log(f'{len(missing)} 段继续（上一轮有进展，不退避）', 'debug')
         running = []
         try:
             for position, item in enumerate(missing):
                 if position:
-                    interruptible_wait(LAUNCH_STAGGER)
-                check_stop()
+                    pause(LAUNCH_STAGGER)
+                check_stop(stop)
                 url = url_of()
-                check_stop()
+                check_stop(stop)
                 process = _spawn(item, url)
                 if process is not None:
                     running.append((item, process))
@@ -407,10 +399,10 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
                         if error is not None:
                             raise error
                     report_progress()
-                    interruptible_wait(2)
+                    pause(2)
         finally:
             _finish_segment_processes([process for _, process in running])
-        check_stop()
+        check_stop(stop)
         wipe_overshot(plan, log)
         gained = sum(_segment_have(item) for item in plan)
         report_progress()
@@ -425,14 +417,14 @@ def download_segments(url_of, target, total, connections, wait=time.sleep,
     short = [item for item in plan if _segment_have(item) < item['want']]
     if short:
         raise PikPakError('分段多次未完成，暂停本文件: 段 '
-                          + ','.join(str(item['index']) for item in short))
-    check_stop()
+                          + ','.join(str(item['index']) for item in short), network=True)
+    check_stop(stop)
     with open(target, 'wb') as out:
         for item in plan:
             remaining = item['want']
             with open(item['path'], 'rb') as handle:
                 while remaining > 0:                # never read the overshoot tail
-                    check_stop()
+                    check_stop(stop)
                     block = handle.read(min(8 << 20, remaining))
                     if not block:
                         break
