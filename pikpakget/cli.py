@@ -238,7 +238,7 @@ def build_parser():
     parser.add_argument('--repeat', type=int, default=1,
                         help='maximum catalogue passes (default: %(default)s; 0 = unlimited). '
                              'Network recovery is independent: stop after 3 consecutive '
-                             'temporary failures, reset after a file completes. '
+                             'temporary failures without progress. '
                              'Other zero-progress passes stop early')
     parser.add_argument('--limit', type=int, default=0, help='process at most N links')
     parser.add_argument('--max-files', type=int, default=0, help='download at most N files')
@@ -546,7 +546,7 @@ def _run_group(args, log, registry, jobs):
                 raise
             completed += pipeline.files_done
             if getattr(pipeline, 'transient_limit_reached', False):
-                raise PikPakError('连续临时失败已达 3 次，已停止本次命令；进度已保留，恢复后可重跑')
+                raise PikPakError('连续 3 次临时失败且无进展，已停止本次命令；进度已保留，恢复后可重跑')
             if code == 4:
                 registry.mark_traffic_capped(item)
                 if file_budget and completed >= file_budget:

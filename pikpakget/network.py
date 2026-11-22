@@ -22,7 +22,7 @@ class RecoveryState:
         self.failures += 1
         self.exhausted = self.failures >= MAX_CONSECUTIVE_FAILURES
 
-    def completed_file(self):
+    def progressed(self):
         self.failures = 0
         self.exhausted = False
 

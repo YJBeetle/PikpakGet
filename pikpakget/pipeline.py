@@ -719,18 +719,20 @@ class Pipeline:
                         pass
         return self._case_folded
 
-    def fetch_to(self, file_id, node, dest_dir, record=None):
-        final = self.dest_path(node, dest_dir)
-        initial = size_on_disk(final + '.part') or 0
+    def partial_bytes(self, final):
         segments = f'{final}.part.segs{self.args.connections}'
         if self.args.connections > 1 and os.path.isdir(segments):
-            initial = sum(size_on_disk(os.path.join(segments, name)) or 0
-                          for name in os.listdir(segments) if name.isdigit())
+            return sum(size_on_disk(os.path.join(segments, name)) or 0
+                       for name in os.listdir(segments) if name.isdigit())
+        return size_on_disk(final + '.part') or 0
+
+    def fetch_to(self, file_id, node, dest_dir, record=None):
+        final = self.dest_path(node, dest_dir)
         # Callers may supply a simple logging function instead of the CLI logger.
         if not isinstance(self.log, Log):
             local, how = self._fetch_to(file_id, node, dest_dir, record)
         else:
-            with TransferProgress(self.log, node['size'], initial) as progress:
+            with TransferProgress(self.log, node['size'], self.partial_bytes(final)) as progress:
                 local, how = self._fetch_to(file_id, node, dest_dir, record, progress.update)
         if how == 'transfer-ready':
             return self.promote(local, final, node, record)
@@ -996,28 +998,33 @@ class Pipeline:
             if self.transient_failures == before:
                 return result
             if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                self.log(f'连续临时失败达到 {MAX_CONSECUTIVE_FAILURES} 次，停止本次任务；'
+                self.log(f'连续 {MAX_CONSECUTIVE_FAILURES} 次临时失败且无进展，停止本次任务；'
                          '进度、片段和云端副本已保留', 'error')
                 return 'network_exhausted'
-            delay = NETWORK_RETRY_WAITS[self.consecutive_failures - 1]
-            self.log(f'{delay}s 后重试当前任务（连续失败 '
+            delay = NETWORK_RETRY_WAITS[max(0, self.consecutive_failures - 1)]
+            self.log(f'{delay}s 后重试当前任务（连续无进展失败 '
                      f'{self.consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}，不占补扫轮次）', 'warn')
             if self.wait_gap(delay):
                 return 'stopped'
         return 'stopped'
 
-    def _note_temporary_failure(self, error, context):
+    def _note_temporary_failure(self, error, context, *, partial_growth=0):
         self.transient_failures += 1
-        self.recovery.failed()
-        self.log(f'{context}临时请求失败（连续 '
-                 f'{self.consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}），'
+        if partial_growth > 0:
+            self.recovery.progressed()
+            detail = f'片段增加 {human(partial_growth)}，连续失败计数已清零'
+        else:
+            self.recovery.failed()
+            detail = f'连续无进展 {self.consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}'
+        self.log(f'{context}临时请求失败（{detail}），'
                  f'已保留进度等待重试：{error}', 'warn')
 
-    def _temporary_failure(self, job, error):
+    def _temporary_failure(self, job, error, *, partial_growth=0):
         link = self.state.link(job.get('key') or job_key(job))
         link.update({'status': 'retry', 'error': str(error)[:300]})
         self.state.save()
-        self._note_temporary_failure(error, f'分享 {job["share_id"][-8:]} ')
+        self._note_temporary_failure(error, f'分享 {job["share_id"][-8:]} ',
+                                     partial_growth=partial_growth)
         return 'retry'
 
     def run_link(self, job):
@@ -1149,7 +1156,7 @@ class Pipeline:
                 record['error'] = None
                 self.state.save()
                 if finishing_download:
-                    self.recovery.completed_file()
+                    self.recovery.progressed()
                 self.log(f'已识别本地文件，跳过下载：{node["path"][:70]}', 'debug')
                 continue
             if record['state'] in ('done', 'downloaded'):
@@ -1211,6 +1218,7 @@ class Pipeline:
                 return 'stopped'
             self.files_left -= 1
             self.log(f'  [{position}/{len(files)}] {human(node["size"])} {node["path"][:70]}')
+            partial_before = None
             try:
                 started = time.time()
                 record['state'] = 'restoring'
@@ -1222,6 +1230,7 @@ class Pipeline:
                 self.wait_ready(restored, node['size'])
                 if self.stop():
                     raise PikPakError('已中断（云端副本与本地进度已保留）')
+                partial_before = self.partial_bytes(planned_local)
                 local, how = self.fetch_to(restored, node, parent_dir, record)
                 if how == 'unverified':
                     self.forget([restored], node['size'])
@@ -1244,7 +1253,7 @@ class Pipeline:
                 self.state.save()
                 self.files_done += 1
                 self.bytes_done += node['size']
-                self.recovery.completed_file()
+                self.recovery.progressed()
                 self.throttle_hits = 0      # the counter means *consecutive*
                 secs = record.get('seconds') or 0
                 detail = f'，均速 {human(node["size"] / secs)}/s' if secs else ''
@@ -1269,17 +1278,20 @@ class Pipeline:
                     self.log('本轮已中断；本地片段和已识别的云端副本保留供续传', 'warn')
                     return 'stopped'
                 if isinstance(error, PikPakError) and error.transient:
+                    partial_growth = 0
                     if record['state'] in ('downloaded', 'unverified'):
                         # The transfer used its file slot even if cloud cleanup
                         # failed. Later passes only need to finish that cleanup.
                         self.files_done += 1
                         self.bytes_done += node['size']
                     else:
+                        if partial_before is not None:
+                            partial_growth = self.partial_bytes(planned_local) - partial_before
                         record['attempts'] = max(record['attempts'] - 1, 0)
                         record['state'] = 'retry'
                         self.files_left += 1
                     record['error'] = str(error)[:300]
-                    return self._temporary_failure(job, error)
+                    return self._temporary_failure(job, error, partial_growth=partial_growth)
                 if isinstance(error, TrafficCapped):
                     # the cap is not this file's fault: hand back the attempt just
                     # spent so the next run still has the full budget for it

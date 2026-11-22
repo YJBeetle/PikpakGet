@@ -84,7 +84,7 @@ class TestTaskNetworkRecovery(unittest.TestCase):
         self.pipeline.wait_space_freed = lambda *args: None
         return node
 
-    def start_server(self, truncate_first=True, truncate_requests=None):
+    def start_server(self, truncate_first=True, truncate_requests=None, empty_requests=()):
         requests = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -95,7 +95,9 @@ class TestTaskNetworkRecovery(unittest.TestCase):
                 self.send_header('Content-Length', str(len(PAYLOAD) - start))
                 self.end_headers()
                 body = PAYLOAD[start:]
-                if ((truncate_requests is not None and len(requests) in truncate_requests)
+                if len(requests) in empty_requests:
+                    body = b''
+                elif ((truncate_requests is not None and len(requests) in truncate_requests)
                         or (truncate_requests is None and len(requests) == 1 and truncate_first)):
                     body = body[:1024]
                 self.wfile.write(body)
@@ -142,9 +144,19 @@ class TestTaskNetworkRecovery(unittest.TestCase):
         self.assertEqual([c.args[0] for c in self.pipeline.wait_gap.call_args_list], [5] * 4)
         self.assertEqual(sum(m.startswith('— 第') for m in self.messages), 1)
 
-    def test_partial_progress_and_existing_done_files_do_not_reset_failures(self):
+    def test_partial_growth_allows_more_than_three_failures_in_one_pass(self):
+        self.pipeline.args.repeat = 1
+        requests = self.start_server(truncate_requests={1, 2, 3, 4})
+        self.configure_transfer()
+        with mock.patch('pikpakget.pipeline.LOCAL_HEADROOM', 0):
+            self.assertEqual(self.pipeline.run([self.job]), 0)
+        self.assertEqual(requests, [0, 1024, 2048, 3072, 4096])
+        self.assertEqual(self.pipeline.consecutive_failures, 0)
+        self.assertEqual(sum(m.startswith('— 第') for m in self.messages), 1)
+
+    def test_partial_growth_resets_streak_but_existing_bytes_do_not(self):
         self.pipeline.args.repeat = 0
-        requests = self.start_server(truncate_requests={1, 2, 3})
+        requests = self.start_server(truncate_requests={3}, empty_requests={1, 2, 4, 5, 6})
         node = self.configure_transfer()
         complete = dict(node, id='old', name='old.bin', path='old.bin')
         self.pipeline.inventory.return_value['files'].insert(0, complete)
@@ -157,10 +169,12 @@ class TestTaskNetworkRecovery(unittest.TestCase):
             {'state': 'done', 'local': path, 'home': path, 'size': len(PAYLOAD)})
         with mock.patch('pikpakget.pipeline.LOCAL_HEADROOM', 0):
             self.assertEqual(self.pipeline.run([self.job]), 1)
-        self.assertEqual(requests, [0, 1024, 2048])
+        self.assertEqual(requests, [0, 0, 0, 1024, 1024, 1024])
         self.assertEqual(self.pipeline.consecutive_failures, 3)
         self.assertTrue(self.pipeline.transient_limit_reached)
-        self.assertEqual(os.path.getsize(os.path.join(root, 'file.bin.part')), 3072)
+        self.assertEqual(os.path.getsize(os.path.join(root, 'file.bin.part')), 1024)
+        self.assertEqual([c.args[0] for c in self.pipeline.wait_gap.call_args_list],
+                         [5, 15, 5, 5, 15])
         self.pipeline.client.cleanup.assert_not_called()
 
     def test_finishing_pending_cleanup_resets_failures_before_next_file(self):

@@ -4,7 +4,7 @@ Changes since each release are listed here. Before 1.0, command and state format
 
 ## Unreleased
 
-- Separate network recovery from catalogue passes: stop after three consecutive task-level temporary failures, resetting only when a file completes. Recoveries no longer consume `--repeat` passes, even across long downloads with several isolated disconnects.
+- Separate network recovery from catalogue passes. Stop after three consecutive temporary failures without progress. Completing a file or retaining more bytes in a partial download resets the counter.
 - Default `--repeat` to 1; explicit 0 now means unlimited catalogue passes, with completion and permanent zero-progress stopping guards. The old 0-as-one-pass behavior is removed.
 
 - Centralize transient-error classification, bounded request retries and interruptible waits across authentication, shield tokens, APIs and transfers. Nested exhaustion no longer multiplies retry budgets, and ambiguous cloud writes are never blindly replayed.
