@@ -8,7 +8,23 @@ from .errors import PikPakError
 NETWORK_RETRY_WAITS = (5, 15, 45, 120, 240)
 THROTTLE_BACKOFF = (30, 120, 480, 900)
 REQUEST_ATTEMPTS = 5
+MAX_CONSECUTIVE_FAILURES = 3
 TRANSPORT_ERRORS = (urllib.error.URLError, OSError, http.client.HTTPException)
+
+
+class RecoveryState:
+    """Command-wide failure streak, shared across accounts and series."""
+    def __init__(self):
+        self.failures = 0
+        self.exhausted = False
+
+    def failed(self):
+        self.failures += 1
+        self.exhausted = self.failures >= MAX_CONSECUTIVE_FAILURES
+
+    def completed_file(self):
+        self.failures = 0
+        self.exhausted = False
 
 
 def check_stop(stop, action=None):

@@ -10,6 +10,8 @@ import signal
 import sys
 import time
 
+from .network import RecoveryState
+
 from . import __version__
 from .api import (DEFAULT_DEST, DOT_DIR_NAME, Client, PikPakError,
                  account_dir)
@@ -233,11 +235,11 @@ def build_parser():
                              'and stays there')
     parser.add_argument('--gap', type=float, default=20,
                         help='seconds to rest between files, to keep request density low')
-    parser.add_argument('--repeat', type=int, default=3,
-                        help='pass over the list up to N times, returning to links that '
-                             'had a transient failure (default: %(default)s; 0 = one pass). '
-                             'Temporary request failures may retry even with zero completed files; '
-                             'other zero-progress passes stop early')
+    parser.add_argument('--repeat', type=int, default=1,
+                        help='maximum catalogue passes (default: %(default)s; 0 = unlimited). '
+                             'Network recovery is independent: stop after 3 consecutive '
+                             'temporary failures, reset after a file completes. '
+                             'Other zero-progress passes stop early')
     parser.add_argument('--limit', type=int, default=0, help='process at most N links')
     parser.add_argument('--max-files', type=int, default=0, help='download at most N files')
     parser.add_argument('--skip-ext', default='', metavar='EXT[,EXT...]',
@@ -431,6 +433,7 @@ def _commands(args, log):
                     grouped.append((job['folder'], [job]))
         else:
             grouped.append((None, jobs))
+        args.recovery_state = RecoveryState()
         remaining_files = args.max_files
         result = 0
         for folder, group in grouped:
@@ -542,6 +545,8 @@ def _run_group(args, log, registry, jobs):
                     continue
                 raise
             completed += pipeline.files_done
+            if getattr(pipeline, 'transient_limit_reached', False):
+                raise PikPakError('连续临时失败已达 3 次，已停止本次命令；进度已保留，恢复后可重跑')
             if code == 4:
                 registry.mark_traffic_capped(item)
                 if file_budget and completed >= file_budget:

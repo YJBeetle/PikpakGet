@@ -76,7 +76,7 @@ The cloud staging folder is `Pack From Shared`. At the start of a download, the 
 | `--max-files N` | unlimited | Limit file processing; failed attempts may also use a slot |
 | `--skip-ext EXT[,EXT...]` | empty | Skip files with matching extensions (case-insensitive, optional leading dot, e.g. `txt,.nfo`); not restored, downloaded, or counted |
 | `--limit N` | unlimited | Process only the first N links |
-| `--repeat N` | `3` | Maximum passes, including the first; zero-progress passes stop early unless a temporary request failed; 0 means one pass |
+| `--repeat N` | `1` | Maximum catalogue passes, including the first; 0 means unlimited. Network recovery has its own budget |
 | `--gap SEC` | `20` | Seconds to wait between files |
 | `--no-delete` | off | Keep this run's cloud copies; low space may later prompt to clear them |
 | `--log -` | log file | Print only to the terminal |
@@ -112,7 +112,11 @@ Rerun the same command to continue unfinished files. Completed shares are listed
 
 ## Verification and limits
 
-Network failures share one transient-error policy and do not imply invalid credentials, an unavailable share, or an account traffic cap. Replay-safe API requests, including refresh, shield credentials, listing and cleanup by ID, make at most five attempts with interruptible backoff. Exhaustion in a nested call propagates without multiplying retries. Interrupted or short downloads keep their fragments and identified cloud copies for later passes without spending the file failure budget. Temporary failures during setup, listing, downloading or cleanup can use the remaining `--repeat` passes even if no file completed; the default is three passes. Exhaustion still exits with progress preserved. The zero-progress guard remains for ordinary logic failures.
+Network failures share one transient-error policy and do not imply invalid credentials, an unavailable share, or an account traffic cap. Replay-safe API requests, including refresh, shield credentials, listing and cleanup by ID, make at most five attempts with interruptible backoff. Exhaustion in a nested call propagates without multiplying retries.
+
+Only exhausted request retries or interrupted transfers count as task-level temporary failures. Three consecutive failures stop the command with progress, fragments and cloud copies preserved. Completing a file, including finishing its pending cloud cleanup, resets that counter. Successful API calls, skipped completed files and growing partial files do not reset it; switching accounts or series in the same command preserves it too. This fixed limit has no option and does not consume catalogue passes: even with `--repeat 1`, recovery resumes within the current task without spending the file failure budget.
+
+`--repeat` now defaults to 1. Set it to 0 for unlimited catalogue passes until the current list finishes or a stopping condition is reached; it does not keep watching for newly added files. Permanent errors with a whole pass of zero progress, three consecutive temporary failures, or an uncertain cloud write still stop the run. The old meaning of `--repeat 0` as one pass has been removed; use 1 for a single pass.
 
 If a cloud write such as a restore or folder creation loses its reply after submission, it may already have taken effect. The tool reports an unknown write outcome and stops replaying it; the next run checks the cloud state. Disk errors, explicit credential rejection and confirmed downstream caps remain separate from ordinary network retries.
 

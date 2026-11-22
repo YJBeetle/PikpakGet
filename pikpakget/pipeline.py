@@ -12,7 +12,6 @@ import csv
 import json
 import os
 import re
-import itertools
 import shutil
 import sys
 import tempfile
@@ -28,7 +27,8 @@ from .api import (CLOUD_FOLDER_NAME, DOT_DIR_NAME, Client, PikPakError,
 from .stream import (PIECE_SIZES, SegmentRefused, download_segments, download_stream,
                      verify_content)
 from .errors import MutationOutcomeUnknown
-from .network import NETWORK_RETRY_WAITS, require_complete
+from .network import (NETWORK_RETRY_WAITS, MAX_CONSECUTIVE_FAILURES, RecoveryState,
+                      require_complete)
 
 SPACE_HEADROOM = 400_000_000          # keep this much cloud space free
 LOCAL_HEADROOM = 20_000_000_000       # ... and this much on the target volume
@@ -420,6 +420,7 @@ class Pipeline:
         self.skip_ext = parse_skip_ext(getattr(args, 'skip_ext', ''))
         self.traffic_capped = False
         self.transient_failures = 0
+        self.recovery = getattr(args, 'recovery_state', None) or RecoveryState()
         self.initialized = False
         self.state = State(os.path.join(args.state_dir, 'state.json')
                            if getattr(args, 'state_dir', None) else None,
@@ -969,12 +970,54 @@ class Pipeline:
         return self.space()['free'] >= needed
 
     # --------------------------------------------------------------------- drive
-    def _temporary_failure(self, job, error):
+    @property
+    def consecutive_failures(self):
+        return self.recovery.failures
+
+    @property
+    def transient_limit_reached(self):
+        return self.recovery.exhausted
+
+    def _retry_temporary(self, operation, context):
+        """Recover the current operation without consuming a catalogue pass."""
+        while not self.stop():
+            if self.transient_limit_reached:
+                return 'network_exhausted'
+            before = self.transient_failures
+            try:
+                result = operation()
+            except PikPakError as error:
+                if not error.transient or not error.replay_safe:
+                    raise
+                self._note_temporary_failure(error, context)
+                result = 'retry'
+            if self.stop():
+                return 'stopped'
+            if self.transient_failures == before:
+                return result
+            if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                self.log(f'连续临时失败达到 {MAX_CONSECUTIVE_FAILURES} 次，停止本次任务；'
+                         '进度、片段和云端副本已保留', 'error')
+                return 'network_exhausted'
+            delay = NETWORK_RETRY_WAITS[self.consecutive_failures - 1]
+            self.log(f'{delay}s 后重试当前任务（连续失败 '
+                     f'{self.consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}，不占补扫轮次）', 'warn')
+            if self.wait_gap(delay):
+                return 'stopped'
+        return 'stopped'
+
+    def _note_temporary_failure(self, error, context):
         self.transient_failures += 1
+        self.recovery.failed()
+        self.log(f'{context}临时请求失败（连续 '
+                 f'{self.consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}），'
+                 f'已保留进度等待重试：{error}', 'warn')
+
+    def _temporary_failure(self, job, error):
         link = self.state.link(job.get('key') or job_key(job))
         link.update({'status': 'retry', 'error': str(error)[:300]})
         self.state.save()
-        self.log(f'临时请求失败 {job["share_id"][-8:]}，已保留进度等待重试：{error}', 'warn')
+        self._note_temporary_failure(error, f'分享 {job["share_id"][-8:]} ')
         return 'retry'
 
     def run_link(self, job):
@@ -1098,12 +1141,15 @@ class Pipeline:
                 adopted += 1
                 if record['state'] == 'done':
                     continue
+                finishing_download = record['state'] == 'downloaded'
                 self.forget([record.get('restored_id')], node['size'])
                 record['local'] = planned_local
                 record['home'] = planned_local
                 record['state'] = 'done'
                 record['error'] = None
                 self.state.save()
+                if finishing_download:
+                    self.recovery.completed_file()
                 self.log(f'已识别本地文件，跳过下载：{node["path"][:70]}', 'debug')
                 continue
             if record['state'] in ('done', 'downloaded'):
@@ -1198,6 +1244,7 @@ class Pipeline:
                 self.state.save()
                 self.files_done += 1
                 self.bytes_done += node['size']
+                self.recovery.completed_file()
                 self.throttle_hits = 0      # the counter means *consecutive*
                 secs = record.get('seconds') or 0
                 detail = f'，均速 {human(node["size"] / secs)}/s' if secs else ''
@@ -1291,51 +1338,50 @@ class Pipeline:
             return 2
         self.state.reset_transient_failures()
         self.state.save()
+        self.initialized = False
         if self.args.limit:
             jobs = jobs[:self.args.limit]
-        initialized = False
-        for pass_number in itertools.count(1):
-            if pass_number > (self.args.repeat or 1):
-                break
+
+        def prepare():
+            if jobs and self.account_id and not self.workspace_id:
+                self.workspace_id = self.client.prepare_workspace()
+            space = self.space()
+            self.quota_limit = space['limit']
+            account = f'账号 {self.account_label} | ' if self.account_label else ''
+            self.log(f'{account}{len(jobs)} 个链接 -> {self.args.dest} | 云盘 '
+                     f'{human(space["usage"])}/{human(space["limit"])} 已用'
+                     f'（回收站 {human(space["in_trash"])}）| '
+                     f'本地可用 {human(shutil.disk_usage(self.args.dest).free)} | '
+                     f'并发 {self.args.connections} 段')
+            if self.workspace_id:
+                self.reclaim_workspace(0)
+            self.initialized = True
+            return 'ready'
+
+        if self._retry_temporary(prepare, '下载准备 ') != 'ready':
+            return 1
+        pass_number = 1
+        while not self.args.repeat or pass_number <= self.args.repeat:
             tally, before_done, before_bytes = collections.Counter(), self.files_done, self.bytes_done
             self.transient_failures = 0
-            if not initialized:
-                try:
-                    if jobs and self.account_id and not self.workspace_id:
-                        self.workspace_id = self.client.prepare_workspace()
-                    space = self.space()
-                    self.quota_limit = space['limit']
-                    account = f'账号 {self.account_label} | ' if self.account_label else ''
-                    self.log(f'{account}{len(jobs)} 个链接 -> {self.args.dest} | 云盘 '
-                             f'{human(space["usage"])}/{human(space["limit"])} 已用'
-                             f'（回收站 {human(space["in_trash"])}）| '
-                             f'本地可用 {human(shutil.disk_usage(self.args.dest).free)} | '
-                             f'并发 {self.args.connections} 段')
-                    if self.workspace_id:
-                        self.reclaim_workspace(0)
-                    initialized = True
-                    self.initialized = True
-                except PikPakError as error:
-                    if not error.transient or not error.replay_safe:
-                        raise
-                    self.transient_failures += 1
-                    tally['retry'] += 1
-                    self.log(f'下载准备暂时失败，进度已保留：{error}', 'warn')
-            if initialized:
-                for position, job in enumerate(jobs, 1):
-                    if self.stop():
-                        break
-                    self.log(f'— 第{pass_number}轮 [{position}/{len(jobs)}] {job["url"]}')
-                    tally[self.run_link(job)] += 1
-                    if tally.get('throttled') or self.stop():
-                        break
+            for position, job in enumerate(jobs, 1):
+                if self.stop():
+                    break
+                self.log(f'— 第{pass_number}轮 [{position}/{len(jobs)}] {job["url"]}')
+                result = self._retry_temporary(lambda: self.run_link(job),
+                                               f'{job["folder"]} ')
+                tally[result] += 1
+                if result in ('throttled', 'network_exhausted', 'stopped') or self.stop():
+                    break
             if self.stop():
                 self.log(f'第 {pass_number} 轮已中断；进度已保存')
                 return 1
             if tally.get('throttled'):
                 return 4 if self.traffic_capped else 1
+            if tally.get('network_exhausted') or tally.get('stopped'):
+                return 1
             try:
-                quota_note = ('云盘用量暂未刷新（临时请求失败）' if self.transient_failures
+                quota_note = ('云盘用量暂未刷新（临时请求失败）' if self.consecutive_failures
                               else f'云盘占用 {human(self.space()["usage"])}')
             except PikPakError as error:
                 if not error.transient:
@@ -1351,22 +1397,16 @@ class Pipeline:
                           if self.state.link(job.get('key') or job_key(job))['status'] != 'done']
             if not unfinished:
                 return 0
-            if self.transient_failures:
-                if pass_number >= (self.args.repeat or 1):
-                    break
-                delay = NETWORK_RETRY_WAITS[min(pass_number - 1, len(NETWORK_RETRY_WAITS) - 1)]
-                self.log(f'本轮有临时请求失败；{delay}s 后进入下一轮'
-                         f'（{pass_number + 1}/{self.args.repeat or 1}），保留片段与云端副本', 'warn')
-                if self.wait_gap(delay):
-                    return 1
-                continue
             if self.files_done == before_done and self.bytes_done == before_bytes:
                 # nothing landed this pass: circling again would only burn quota and
                 # goodwill, so stop and let a human look
                 self.log(f'{len(unfinished)} 个链接仍未完成，且本轮零进展，停止重试。'
                          '请看上面的失败原因后重跑同一命令', 'error')
                 return 1
+            if self.args.repeat and pass_number >= self.args.repeat:
+                break
             self.log(f'{len(unfinished)} 个链接未完成，进入下一轮补齐')
+            pass_number += 1
         self.log('仍有链接未完成；重跑同一命令即可从断点继续', 'warn')
         return 1
 
